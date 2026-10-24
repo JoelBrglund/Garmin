@@ -7,7 +7,7 @@ The passphrase comes from the DASHBOARD_PASSPHRASE environment variable; if it i
 you are asked to type it. The dashboard asks for the same passphrase to unlock the data.
 
 How it works: the data is compressed (gzip), then encrypted with AES-256-GCM. The
-encryption key is made from the passphrase with PBKDF2 (600,000 rounds of SHA-256),
+encryption key is made from the passphrase with PBKDF2 (2,000,000 rounds of SHA-256),
 which makes guessing passphrases slow. The browser reverses these steps.
 """
 from __future__ import annotations
@@ -27,7 +27,9 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 REPO = Path(__file__).resolve().parents[1]
 IN_FILE = REPO / "data" / "data.json"
 OUT_FILE = REPO / "site" / "data.enc"
-ITERATIONS = 600_000
+# Higher = slower to guess passphrases, but also slower to unlock. The number is saved with
+# the data, so the browser always uses the right value.
+ITERATIONS = 2_000_000
 
 
 def b64(raw: bytes) -> str:

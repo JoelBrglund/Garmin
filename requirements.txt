@@ -1,4 +1,4 @@
 garmin-connect-personal-api-python==1.0.0
 cryptography==50.0.2
 truststore==0.10.5
-tzdata
+tzdata==2026.5

@@ -45,6 +45,14 @@ Then open http://localhost:8000. (The browser only allows decryption on `localho
 - Never commit `data/` or any unencrypted Garmin data. The repo is public (needed for free GitHub Pages); only encrypted data is published.
 - If an `.env` file is ever added inside the repo, make sure `.gitignore` covers it first.
 
+## Security hardening (keep these when making changes)
+
+- **Content Security Policy** (`<meta http-equiv="Content-Security-Policy">` in `site/index.html`): the page may only load scripts, styles, images and data from its own site. When adding any outside resource (CDN library, web font, external API), add its origin to the matching directive (`script-src`, `style-src`/`font-src`, `connect-src`, `img-src`); otherwise the browser silently blocks it. Keep JavaScript in `.js` files: inline `<script>` blocks and `onclick="..."` attributes are blocked.
+- **Workflow actions are pinned to commit SHAs** with the version as a comment. To upgrade one, look up the new tag's commit (`git ls-remote https://github.com/actions/<name> refs/tags/<tag>`) and replace both the SHA and the comment. Pin any newly added action the same way.
+- **Python packages are pinned** with `==` in `requirements.txt`. Pin new ones too.
+- **Encryption strength**: `ITERATIONS` in `fetch/encrypt.py` (2,000,000 PBKDF2 rounds). The value is stored in `data.enc`, so the browser needs no change if it is adjusted.
+- Text from Garmin (activity names etc.) must go through `esc()` before being inserted as HTML.
+
 ## Garmin Personal API notes
 
 - Pull only, read only. Bearer token lasts 24 h and is created from the key on each run.
