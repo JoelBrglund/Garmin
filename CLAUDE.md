@@ -17,6 +17,17 @@ The owner is a beginner: explain unfamiliar technical concepts in plain English 
 3. `site/` is a static web app with no build step and no libraries (plain HTML/CSS/JS, charts are hand-drawn SVG in `app.js`). The browser decrypts `data.enc` after the passphrase is entered.
 4. `.github/workflows/update.yml` runs steps 1–2 every 3 hours (and on push/manual run) and publishes `site/` to GitHub Pages.
 
+Live site: https://joelbrglund.github.io/Garmin/ (repo: github.com/JoelBrglund/Garmin, public). Pushing to `main` rebuilds and publishes it automatically (~2 min). Secrets and Pages (source: GitHub Actions) are already set up.
+
+## Dashboard design decisions
+
+- Four tabs: **Today** (recovery tiles: HRV, resting HR, sleep, overnight breathing compared with the 30-day baseline; 14-day HRV/RHR charts; that day's workouts or the latest one; this week vs last week), **Sleep**, **Activities**, **Fitness** (RHR and HRV with 7-day averages, running efficiency, swim pace, SWOLF, weekly training load, weight, fitness age, HR zones).
+- **Swims use total time including rests** (`elapsedDuration`, via `actTime()` in `app.js`) everywhere: lists, details, weekly totals. Details also show swim time (`movingDuration`) and rest time. Swim pace is Garmin's pace while swimming.
+- **Running efficiency** = metres per heartbeat (`averageSpeed × 60 / averageHR`); rising = fitter.
+- Workout details end with "All other fields" so no Garmin value is ever hidden; calories, intensity minutes and Body Battery live there.
+- Units and 12/24 h time follow the Garmin profile (`units`, `timeFormat` in the data). UI text is English.
+- Charts: colors come from CSS tokens in `style.css` (light + dark mode). Single-series charts get an end label; multi-series charts use a legend and the tap/hover tooltip instead. Every chart card has a "Show numbers" table.
+
 ## Layout
 
 - `fetch/` – Python scripts (fetch + encrypt)
@@ -36,6 +47,21 @@ python -m venv .venv
 
 Then open http://localhost:8000. (The browser only allows decryption on `localhost` or `https`.) If pip fails with an SSL certificate error on this PC, add `--use-feature=truststore`.
 
+## Testing changes
+
+- Test against real data without touching the real passphrase: run the fetcher, then `DASHBOARD_PASSPHRASE="test passphrase 1234" python fetch/encrypt.py`, copy `site/` to a scratch folder, move `data.enc` there, and serve that folder. Don't leave `site/data.enc` in the repo.
+- Browser checks use Playwright with the installed Chrome (`p.chromium.launch(channel="chrome")`); it is installed in `.venv` for testing only and is not in `requirements.txt`. Check phone (390 px) and desktop widths, light and dark mode, and that the console shows no errors (including blocked-by-CSP messages).
+- Headless `chrome --dump-dom/--screenshot` doesn't wait for the unlock, so use Playwright instead. Node.js and the `gh` CLI are not installed; check workflow runs via the public API (`https://api.github.com/repos/JoelBrglund/Garmin/actions/runs`).
+- On this PC, Python output with emoji fails in the console; use `sys.stdout.reconfigure(encoding="utf-8")`.
+- Stop a local test server by matching its command line (`http.server <port>`), never by killing all `python.exe` processes.
+
+## Everyday tasks for the owner
+
+- **Install on iPhone:** open the live site in Safari → Share → Add to Home Screen; enter the passphrase once inside the installed app (it has its own storage).
+- **Change the passphrase:** update the `DASHBOARD_PASSPHRASE` secret, then Actions → Update dashboard → Run workflow. Use 5–6 random words.
+- **Garmin key expired** (dashboard says "not updating", workflow fails): create a new key in Garmin Connect settings, update the `GARMIN_PERSONAL_API_KEY` secret and `../Garmin API.env`, re-run the workflow.
+- GitHub pauses scheduled workflows after 60 days without repo activity; pressing Run workflow re-enables it.
+
 ## Secrets and data
 
 - The Git repository is the inner `Garmin/` folder; its parent folder is not under version control.
@@ -52,6 +78,15 @@ Then open http://localhost:8000. (The browser only allows decryption on `localho
 - **Python packages are pinned** with `==` in `requirements.txt`. Pin new ones too.
 - **Encryption strength**: `ITERATIONS` in `fetch/encrypt.py` (2,000,000 PBKDF2 rounds). The value is stored in `data.enc`, so the browser needs no change if it is adjusted.
 - Text from Garmin (activity names etc.) must go through `esc()` before being inserted as HTML.
+- GitHub Actions logs are public: scripts may print counts and error types, never health data, the key or the passphrase.
+- The remembered passphrase is stored in the browser's `localStorage` ("Remember on this device"); the lock button forgets it.
+
+**Security checklist** (re-run after bigger changes):
+1. Key not in code or history: search `git log --all -p` for the start of the key (without printing the key).
+2. `https://joelbrglund.github.io/Garmin/data.enc` is ciphertext; `/data/data.json` returns 404.
+3. Browser DevTools → Network: every request goes to `joelbrglund.github.io` only.
+4. A private browser window shows only the lock screen; a wrong passphrase is rejected.
+5. The latest Actions log contains nothing personal.
 
 ## Garmin Personal API notes
 
