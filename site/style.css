@@ -97,6 +97,11 @@ svg { display: block; }
 .icon-btn { width: 40px; height: 40px; border-radius: 10px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; color: var(--text-2); }
 .icon-btn:hover { background: var(--surface-2); }
 .icon-btn svg { width: 22px; height: 22px; }
+.icon-btn.busy { color: var(--accent, var(--text)); }
+.icon-btn.busy svg { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.busy svg { animation: none; opacity: 0.5; } }
+#refresh-status { margin-top: 2px; }
 .view {
   padding: 4px max(16px, env(safe-area-inset-right)) calc(var(--tabbar-h) + 24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   display: grid; gap: 14px;

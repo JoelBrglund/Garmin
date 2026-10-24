@@ -44,13 +44,32 @@ def encrypt(plaintext: bytes, passphrase: str) -> dict:
     return {"v": 1, "kdf": "PBKDF2-SHA256", "iter": ITERATIONS, "salt": b64(salt), "iv": b64(iv), "ct": b64(ciphertext)}
 
 
+def with_refresh_key(plaintext: bytes) -> bytes:
+    """Add the GitHub key that lets the dashboard's refresh button start an update.
+
+    It goes only into the encrypted copy (never into data/data.json), so only someone with the
+    passphrase can use it. Without DASHBOARD_REFRESH_TOKEN the button just reloads the website copy.
+    """
+    token = os.environ.get("DASHBOARD_REFRESH_TOKEN", "").strip()
+    if not token:
+        return plaintext
+    data = json.loads(plaintext)
+    data["refresh"] = {
+        "token": token,
+        "repo": os.environ.get("GITHUB_REPOSITORY", "JoelBrglund/Garmin"),
+        "workflow": "update.yml",
+        "ref": "main",
+    }
+    return json.dumps(data).encode("utf-8")
+
+
 def main() -> None:
     if not IN_FILE.exists():
         sys.exit(f"{IN_FILE.relative_to(REPO)} not found - run fetch/fetch_garmin.py first.")
     passphrase = os.environ.get("DASHBOARD_PASSPHRASE") or getpass.getpass("Dashboard passphrase: ")
     if len(passphrase) < 12:
         sys.exit("Use a passphrase of at least 12 characters (e.g. four random words).")
-    OUT_FILE.write_text(json.dumps(encrypt(IN_FILE.read_bytes(), passphrase)), encoding="utf-8")
+    OUT_FILE.write_text(json.dumps(encrypt(with_refresh_key(IN_FILE.read_bytes()), passphrase)), encoding="utf-8")
     print(f"Encrypted data saved to {OUT_FILE.relative_to(REPO)}")
 
 

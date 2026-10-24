@@ -26,6 +26,7 @@ Live site: https://joelbrglund.github.io/Garmin/ (repo: github.com/JoelBrglund/G
 - **Running efficiency** = metres per heartbeat (`averageSpeed × 60 / averageHR`); rising = fitter.
 - Workout details end with "All other fields" so no Garmin value is ever hidden; calories, intensity minutes and Body Battery live there.
 - Units and 12/24 h time follow the Garmin profile (`units`, `timeFormat` in the data). UI text is English.
+- **Refresh button** (`refresh()` in `app.js`): reloads `data.enc`; if nothing is newer and the data is over 10 minutes old, it starts the workflow through the GitHub API (`workflow_dispatch`) and polls every 5 s until new data is published (about 2–3 min, gives up after 8), reporting failures from the run status. It shows a spinning icon and a status line under "Updated…". The GitHub key comes from `DATA.refresh`, which `encrypt.py` adds from the `DASHBOARD_REFRESH_TOKEN` secret. Without that secret the button only reloads the website copy. The installed app also re-checks `data.enc` when reopened after 5+ minutes.
 - Charts: colors come from CSS tokens in `style.css` (light + dark mode). Single-series charts get an end label; multi-series charts use a legend and the tap/hover tooltip instead. Every chart card has a "Show numbers" table.
 
 ## Layout
@@ -60,20 +61,21 @@ Then open http://localhost:8000. (The browser only allows decryption on `localho
 - **Install on iPhone:** open the live site in Safari → Share → Add to Home Screen; enter the passphrase once inside the installed app (it has its own storage).
 - **Change the passphrase:** update the `DASHBOARD_PASSPHRASE` secret, then Actions → Update dashboard → Run workflow. Use 5–6 random words.
 - **Garmin key expired** (dashboard says "not updating", workflow fails): create a new key in Garmin Connect settings, update the `GARMIN_PERSONAL_API_KEY` secret and `../Garmin API.env`, re-run the workflow.
+- **Set up or renew the refresh key** (the refresh button says the key has expired): GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token. Repository access: only `JoelBrglund/Garmin`. Permissions: **Actions: Read and write**, nothing else. Longest expiry allowed. Save it as the repository secret `DASHBOARD_REFRESH_TOKEN`, then Actions → Update dashboard → Run workflow.
 - GitHub pauses scheduled workflows after 60 days without repo activity; pressing Run workflow re-enables it.
 
 ## Secrets and data
 
 - The Git repository is the inner `Garmin/` folder; its parent folder is not under version control.
 - The Garmin API key lives in `../Garmin API.env` (one line, the bare key), outside the repo. Never copy it into the repo, commit it, or print it. The fetcher reads it from `GARMIN_PERSONAL_API_KEY` or that file.
-- On GitHub the key and the dashboard passphrase are repository secrets: `GARMIN_PERSONAL_API_KEY` and `DASHBOARD_PASSPHRASE`.
+- On GitHub the key and the dashboard passphrase are repository secrets: `GARMIN_PERSONAL_API_KEY` and `DASHBOARD_PASSPHRASE`. The optional `DASHBOARD_REFRESH_TOKEN` (GitHub token, Actions read/write on this repo only) is placed inside the encrypted data so the refresh button can start the workflow; anyone with the passphrase can therefore start or cancel workflow runs, but cannot read secrets or change code. It is never written to `data/data.json`.
 - Garmin Personal API keys expire (30 days to 1 year, chosen when created in Garmin Connect settings). When it expires the workflow fails and the dashboard shows "not updating"; create a new key and update the secret and the local file.
 - Never commit `data/` or any unencrypted Garmin data. The repo is public (needed for free GitHub Pages); only encrypted data is published.
 - If an `.env` file is ever added inside the repo, make sure `.gitignore` covers it first.
 
 ## Security hardening (keep these when making changes)
 
-- **Content Security Policy** (`<meta http-equiv="Content-Security-Policy">` in `site/index.html`): the page may only load scripts, styles, images and data from its own site. When adding any outside resource (CDN library, web font, external API), add its origin to the matching directive (`script-src`, `style-src`/`font-src`, `connect-src`, `img-src`); otherwise the browser silently blocks it. Keep JavaScript in `.js` files: inline `<script>` blocks and `onclick="..."` attributes are blocked.
+- **Content Security Policy** (`<meta http-equiv="Content-Security-Policy">` in `site/index.html`): the page may only load scripts, styles, images and data from its own site, plus `https://api.github.com` for the refresh button. When adding any outside resource (CDN library, web font, external API), add its origin to the matching directive (`script-src`, `style-src`/`font-src`, `connect-src`, `img-src`); otherwise the browser silently blocks it. Keep JavaScript in `.js` files: inline `<script>` blocks and `onclick="..."` attributes are blocked.
 - **Workflow actions are pinned to commit SHAs** with the version as a comment. To upgrade one, look up the new tag's commit (`git ls-remote https://github.com/actions/<name> refs/tags/<tag>`) and replace both the SHA and the comment. Pin any newly added action the same way.
 - **Python packages are pinned** with `==` in `requirements.txt`. Pin new ones too.
 - **Encryption strength**: `ITERATIONS` in `fetch/encrypt.py` (2,000,000 PBKDF2 rounds). The value is stored in `data.enc`, so the browser needs no change if it is adjusted.
@@ -84,7 +86,7 @@ Then open http://localhost:8000. (The browser only allows decryption on `localho
 **Security checklist** (re-run after bigger changes):
 1. Key not in code or history: search `git log --all -p` for the start of the key (without printing the key).
 2. `https://joelbrglund.github.io/Garmin/data.enc` is ciphertext; `/data/data.json` returns 404.
-3. Browser DevTools → Network: every request goes to `joelbrglund.github.io` only.
+3. Browser DevTools → Network: every request goes to `joelbrglund.github.io`, or to `api.github.com` after pressing refresh.
 4. A private browser window shows only the lock screen; a wrong passphrase is rejected.
 5. The latest Actions log contains nothing personal.
 

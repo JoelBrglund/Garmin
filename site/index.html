@@ -8,7 +8,7 @@
   <meta name="robots" content="noindex, nofollow">
   <!-- Security rule: the browser may only load code, styles, images and data from this site itself.
        If you add an outside resource (font, library, API), add its address here too. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
@@ -43,6 +43,7 @@
       <div>
         <h1 id="view-title">Today</h1>
         <p id="updated" class="muted small"></p>
+        <p id="refresh-status" class="muted small" role="status" aria-live="polite" hidden></p>
       </div>
       <div class="topbar-actions">
         <button id="refresh-btn" class="icon-btn" aria-label="Reload data" title="Reload data">

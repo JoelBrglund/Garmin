@@ -11,6 +11,7 @@ const store = {
 };
 
 let DATA = null;
+let PASS = null; // passphrase of the unlocked session, kept in memory for refreshing
 const state = { tab: "today", day: null, night: null, range: 30, actType: "all" };
 
 /* ---------- Unlocking ---------- */
@@ -41,6 +42,8 @@ async function unlock(passphrase, remember) {
     if (e.name === "OperationError") throw new Error("Wrong passphrase.");
     throw e;
   }
+  PASS = passphrase;
+  lastCheck = Date.now();
   if (remember) store.set(PASS_KEY, passphrase);
   prepare();
   $("#lock").hidden = true;
@@ -49,7 +52,8 @@ async function unlock(passphrase, remember) {
 }
 
 function showLock(message = "") {
-  DATA = null;
+  DATA = null; PASS = null;
+  setStatus("");
   $("#app").hidden = true;
   $("#lock").hidden = false;
   $("#lock-error").textContent = message;
@@ -67,10 +71,92 @@ $("#lock-form").addEventListener("submit", async (e) => {
 });
 
 $("#lock-btn").addEventListener("click", () => { store.del(PASS_KEY); showLock(); });
-$("#refresh-btn").addEventListener("click", async () => {
-  const pass = store.get(PASS_KEY);
-  if (!pass) return showLock("Enter your passphrase to reload.");
-  try { await unlock(pass, true); } catch (err) { showLock(err.message); }
+
+/* ---------- Refreshing ----------
+   The refresh button first reloads the copy on the website. If that has nothing new, it asks
+   GitHub to run the update workflow now (using the key stored inside the encrypted data) and
+   waits for the new data to be published, which takes about 2-3 minutes. */
+
+let refreshing = false, lastCheck = 0, statusTimer = null;
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+const minutesSince = (iso) => (Date.now() - new Date(iso)) / 60000;
+
+function setStatus(text, kind = "", clearAfter = 0) {
+  clearTimeout(statusTimer);
+  const el = $("#refresh-status");
+  el.textContent = text;
+  el.className = `small ${kind === "error" ? "error" : "muted"}`;
+  el.hidden = !text;
+  if (clearAfter) statusTimer = setTimeout(() => setStatus(""), clearAfter);
+}
+
+// Reloads data.enc. Redraws only if it is newer, so scroll position and open details are kept otherwise.
+async function reloadData() {
+  const fresh = await decrypt(await loadBlob(), PASS);
+  lastCheck = Date.now();
+  if (fresh.generatedAt === DATA.generatedAt) { DATA = fresh; showUpdated(); return false; }
+  DATA = fresh; prepare(); render();
+  return true;
+}
+
+async function github(r, path, options = {}) {
+  let res;
+  try {
+    res = await fetch(`https://api.github.com/repos/${r.repo}/actions/${path}`, { ...options, cache: "no-store",
+      headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${r.token}`, "X-GitHub-Api-Version": "2022-11-28" } });
+  } catch { throw new Error("Couldn't reach GitHub - check your internet connection."); }
+  if (res.status === 401) throw new Error("The refresh key has expired or is wrong - make a new one (see CLAUDE.md).");
+  if (res.status === 403 || res.status === 404) throw new Error("The refresh key isn't allowed to start updates - it needs Actions: Read and write.");
+  if (!res.ok) throw new Error(`GitHub didn't accept the request (HTTP ${res.status}).`);
+  return res.status === 204 ? null : res.json().catch(() => null);
+}
+const latestRun = async (r) => (await github(r, `workflows/${r.workflow}/runs?per_page=1`))?.workflow_runs?.[0] || null;
+
+async function refresh() {
+  if (refreshing || !DATA) return;
+  refreshing = true;
+  const btn = $("#refresh-btn");
+  btn.classList.add("busy"); btn.setAttribute("aria-busy", "true");
+  try {
+    if (!navigator.onLine) return setStatus("You're offline - showing the last saved data.", "", 6000);
+    setStatus("Checking for new data…");
+    if (await reloadData()) return setStatus("Updated with the latest data.", "", 5000);
+    const r = DATA.refresh;
+    if (!r?.token) return setStatus("Already up to date. New data arrives every 3 hours.", "", 6000);
+    if (minutesSince(DATA.generatedAt) < 10) return setStatus("Already up to date - fetched from Garmin a few minutes ago.", "", 6000);
+
+    // Start the update, unless one is already running.
+    const started = Date.now();
+    const running = await latestRun(r);
+    if (!running || running.status === "completed") await github(r, `workflows/${r.workflow}/dispatches`, { method: "POST", body: JSON.stringify({ ref: r.ref }) });
+
+    let polls = 0;
+    while (Date.now() - started < 8 * 60000) {
+      const s = Math.round((Date.now() - started) / 1000);
+      setStatus(`Getting new data from Garmin… ${Math.floor(s / 60)}:${pad2(s % 60)} (usually 2-3 min)`);
+      await sleepMs(5000);
+      if (await reloadData()) return setStatus("Updated with the latest data.", "", 5000);
+      if (++polls % 3 === 0) { // check the run itself every 15 s so a failure is reported right away
+        const run = await latestRun(r);
+        if (run && run.status === "completed" && run.conclusion !== "success" && new Date(run.created_at) > started - 60000)
+          throw new Error("The update failed - open GitHub Actions to see why.");
+      }
+    }
+    throw new Error("The update is taking longer than usual - try again in a few minutes.");
+  } catch (err) {
+    if (err.name === "OperationError") { store.del(PASS_KEY); return showLock("Passphrase changed - enter the new one."); }
+    setStatus(err.message, "error", 15000);
+  } finally {
+    refreshing = false;
+    btn.classList.remove("busy"); btn.removeAttribute("aria-busy");
+  }
+}
+$("#refresh-btn").addEventListener("click", refresh);
+
+// The installed iPhone app resumes where it was left, so quietly check for new data when it comes back.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && DATA && !refreshing && Date.now() - lastCheck > 5 * 60000)
+    reloadData().catch(() => {});
 });
 
 (async function start() {
@@ -575,12 +661,16 @@ document.addEventListener("click", (e) => { const b = e.target.closest("[data-ac
 
 const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Fitness" };
 
+function showUpdated() {
+  const age = (Date.now() - new Date(DATA.generatedAt)) / 3600000;
+  $("#updated").innerHTML = `Updated ${ago(DATA.generatedAt)}` + (age > 8 ? ` <span class="stale">· not updating - check GitHub Actions</span>` : "");
+}
+
 function render() {
   $("#tooltip").hidden = true;
   document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
   $("#view-title").textContent = TITLES[state.tab];
-  const age = (Date.now() - new Date(DATA.generatedAt)) / 3600000;
-  $("#updated").innerHTML = `Updated ${ago(DATA.generatedAt)}` + (age > 8 ? ` <span class="stale">· not updating - check GitHub Actions</span>` : "");
+  showUpdated();
   $("#warnings").innerHTML = (DATA.errors || []).length
     ? `<div class="banner">Some data couldn't be loaded on the last update: ${DATA.errors.map((e) => esc(e.split(":")[0])).join(", ")}.</div>` : "";
   const view = $("#view");

@@ -41,6 +41,8 @@ jobs:
       - name: Encrypt data
         env:
           DASHBOARD_PASSPHRASE: ${{ secrets.DASHBOARD_PASSPHRASE }}
+          # Optional: lets the dashboard's refresh button start this workflow (stored encrypted only).
+          DASHBOARD_REFRESH_TOKEN: ${{ secrets.DASHBOARD_REFRESH_TOKEN }}
         run: python fetch/encrypt.py
 
       - name: Remove unencrypted data before publishing
