@@ -4,7 +4,9 @@ Guidance for Claude Code when working in this repository.
 
 ## Project
 
-A personal Garmin dashboard that works on phone and computer, in Chrome or Safari, and can be added to the iPhone home screen as a web app. It should be easy to read without leaving out anything important (daily health, sleep, workouts, trends).
+A personal Garmin dashboard that works on phone and computer, in Chrome or Safari, and can be added to the iPhone home screen as a web app. It should be easy to read without leaving out anything important.
+
+Focus: workouts, sleep, recovery (HRV, resting heart rate) and markers of fitness improvement (running efficiency, swim pace/SWOLF, training load, fitness age). The owner does not want Body Battery, stress, intensity minutes, calories or floors on the dashboard (the fetcher still downloads them).
 
 The owner is a beginner: explain unfamiliar technical concepts in plain English when they matter.
 

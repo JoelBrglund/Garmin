@@ -199,24 +199,33 @@ function stackBar(parts) { // parts: [{label, value, color}]
   return `<div class="stack">${bar}</div><div class="legend">${legend}</div>`;
 }
 
-function weekIntensity(dateStr) { // Garmin counts vigorous minutes double; week starts Monday
-  const d = dayDate(dateStr);
-  const monday = new Date(d - ((d.getUTCDay() + 6) % 7) * 86400000);
-  let total = 0;
-  for (let t = monday; t <= d; t = new Date(+t + 86400000)) {
-    const row = byDate.get(t.toISOString().slice(0, 10));
-    if (row) total += (row.imModerate || 0) + 2 * (row.imVigorous || 0);
-  }
-  return total;
+const avg = (vals) => { const v = vals.filter(nz); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+// Average of the last n values at each point (smooths out day-to-day noise).
+const rolling = (vals, n = 7) => vals.map((_, i) => {
+  const w = vals.slice(Math.max(0, i - n + 1), i + 1).filter(nz);
+  return w.length >= 3 ? w.reduce((a, b) => a + b, 0) / w.length : null;
+});
+// Your personal baseline: average of the n days before dateStr.
+const baseline = (pick, dateStr, n = 30) => avg(DATA.days.filter((d) => d.date < dateStr).slice(-n).map(pick));
+function vsBaseline(v, base, unit) {
+  if (!nz(v) || !nz(base)) return "";
+  const diff = Math.round(v - base);
+  if (!diff) return `Same as your 30-day average`;
+  return `${Math.abs(diff)} ${unit} ${diff < 0 ? "below" : "above"} your 30-day avg (${num(base)})`;
 }
-
-function latestWeight(dateStr) {
-  for (let i = DATA.days.length - 1; i >= 0; i--) {
-    const d = DATA.days[i];
-    if (d.date <= dateStr && d.weightKg) return d;
+const actDate = (a) => a.startTimeLocal.slice(0, 10);
+const mondayOf = (dateStr) => { const d = dayDate(dateStr); return new Date(d - ((d.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10); };
+const addDays = (dateStr, n) => new Date(+dayDate(dateStr) + n * 86400000).toISOString().slice(0, 10);
+// Totals per Monday-to-Sunday week: [{ s: "YYYY-MM-DD", v: number }], oldest first.
+function weekly(acts, value, weeks = 12) {
+  const last = mondayOf(localToday()), out = [];
+  for (let k = weeks - 1; k >= 0; k--) {
+    const s = addDays(last, -7 * k), e = addDays(s, 7);
+    out.push({ s, v: acts.filter((a) => actDate(a) >= s && actDate(a) < e).reduce((x, a) => x + (value(a) || 0), 0) });
   }
-  return null;
+  return out;
 }
+const isRealRun = (a) => /run/.test(a.type) && a.distance > 0;
 
 /* ---------- Charts (SVG) ---------- */
 
@@ -245,7 +254,8 @@ function chart(el, cfg) {
   el.classList.add("chart");
   const draw = () => {
     const W = el.clientWidth || 300, H = cfg.height || 170;
-    const padL = 34, padR = cfg.type === "line" && cfg.endLabel !== false ? 30 : 6, padT = 10, padB = 22;
+    const endLabel = cfg.endLabel ?? cfg.series.length === 1; // two-line charts rely on legend + tooltip
+    const padL = 34, padR = cfg.type === "line" && endLabel ? 30 : 6, padT = 10, padB = 22;
     const pw = W - padL - padR, ph = H - padT - padB;
     const n = cfg.labels.length;
     const stacked = cfg.type === "stack";
@@ -321,7 +331,7 @@ function chart(el, cfg) {
         if (pts && pts <= 2 || cfg.dots) sr.values.forEach((v, i) => { if (nz(v)) s += `<circle class="dot" cx="${X(i)}" cy="${Y(v)}" r="4" fill="${sr.color}"/>`; });
         if (lastI >= 0) {
           s += `<circle class="dot" cx="${X(lastI)}" cy="${Y(sr.values[lastI])}" r="4" fill="${sr.color}"/>`;
-          if (cfg.endLabel !== false) s += `<text class="end-label" x="${X(lastI) + 7}" y="${Y(sr.values[lastI]) + 4}">${esc((cfg.axisFmt || compact)(sr.values[lastI]))}</text>`;
+          if (endLabel) s += `<text class="end-label" x="${X(lastI) + 7}" y="${Y(sr.values[lastI]) + 4}">${esc((cfg.axisFmt || compact)(sr.values[lastI]))}</text>`;
         }
       });
     }
@@ -423,7 +433,7 @@ function actSummary(a) {
   if (a.totalSets) st.push(["Sets", num(a.activeSets ?? a.totalSets)]);
   if (a.totalReps) st.push(["Reps", num(a.totalReps)]);
   if (a.averageHR) st.push(["♥", `${num(a.averageHR)} bpm`]);
-  if (a.calories) st.push(["", `${num(a.calories)} kcal`]);
+  if (a.trainingEffectLabel) st.push(["", humanize(a.trainingEffectLabel)]);
   return st.map(([k, v]) => `<span>${k ? esc(k) + " " : ""}<b>${esc(v)}</b></span>`).join("");
 }
 
@@ -461,8 +471,8 @@ function openActivity(id) {
   const u = (...keys) => { keys.forEach((k) => used.add(k)); };
   const sec = (title, list) => { const r = rows(list); return r.includes("No data.") ? "" : `<section class="card"><h2>${esc(title)}</h2>${r}</section>`; };
 
-  u("duration", "movingDuration", "elapsedDuration", "distance", "averageSpeed", "maxSpeed", "avgGradeAdjustedSpeed", "calories", "bmrCalories",
-    "steps", "lapCount", "locationName", "waterEstimated", "differenceBodyBattery", "moderateIntensityMinutes", "vigorousIntensityMinutes");
+  // Calories, intensity minutes, Body Battery etc. are left to "All other fields" at the bottom.
+  u("duration", "movingDuration", "elapsedDuration", "distance", "averageSpeed", "maxSpeed", "avgGradeAdjustedSpeed", "steps", "lapCount", "locationName");
   let html = sec("Overview", [
     ["Date", `${fmtDay(a.startTimeLocal.slice(0, 10), { weekday: "long", day: "numeric", month: "long", year: "numeric" })}`],
     ["Start", clockStr(a.startTimeLocal)],
@@ -480,12 +490,8 @@ function openActivity(id) {
     [isRide(a) ? "Avg speed" : isSwim(a) ? "Avg pace (while swimming)" : "Avg pace", actSpeed(a)],
     [isRide(a) ? "Max speed" : "Best pace", a.maxSpeed && a.distance > 0 && !isSwim(a) ? (isRide(a) ? speed(a.maxSpeed) : `${pace(a.maxSpeed)} ${paceUnit()}`) : null],
     ["Grade adjusted pace", a.avgGradeAdjustedSpeed && isRun(a) ? `${pace(a.avgGradeAdjustedSpeed)} ${paceUnit()}` : null],
-    ["Calories", a.calories ? `${num(a.calories)} kcal` + (a.bmrCalories ? ` <span class="muted">(${num(a.bmrCalories)} resting)</span>` : "") : null],
-    ["Intensity minutes", (a.moderateIntensityMinutes || a.vigorousIntensityMinutes) ? `${num(a.moderateIntensityMinutes || 0)} moderate · ${num(a.vigorousIntensityMinutes || 0)} vigorous` : null],
-    ["Body Battery impact", nz(a.differenceBodyBattery) ? num(a.differenceBodyBattery) : null],
     ["Steps", a.steps ? num(a.steps) : null],
     ["Laps", a.lapCount ? num(a.lapCount) : null],
-    ["Sweat loss (est.)", a.waterEstimated ? `${num(a.waterEstimated)} ml` : null],
   ]);
 
   u("averageHR", "maxHR", "minHR");
@@ -567,7 +573,7 @@ document.addEventListener("click", (e) => { const b = e.target.closest("[data-ac
 
 /* ---------- Views ---------- */
 
-const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Trends" };
+const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Fitness" };
 
 function render() {
   $("#tooltip").hidden = true;
@@ -611,63 +617,49 @@ function renderToday(view) {
   dayPicker(view, dates, state.day, (d) => { state.day = d; render(); });
   const d = byDate.get(state.day) || {};
   const sl = d.sleep, hrv = d.hrv;
-  const wk = weekIntensity(state.day);
-  const w = latestWeight(state.day);
-  const isLive = DATA.intraday && DATA.intraday.date === state.day;
 
-  const tiles = [
-    tile("Body Battery", nz(d.bbLatest) && isLive ? num(d.bbLatest) : nz(d.bbMax) ? num(d.bbMax) + "<small> high</small>" : "–",
-      nz(d.bbMax) ? `High ${num(d.bbMax)} · Low ${num(d.bbMin)}<br>+${num(d.bbCharged)} charged · −${num(d.bbDrained)} drained` : ""),
-    tile("Steps", num(d.steps), nz(d.stepGoal) ? `Goal ${num(d.stepGoal)} · ${dist(d.distance, 1)}` : "", nz(d.stepGoal) ? meter(d.steps / d.stepGoal) : ""),
-    tile("Resting heart rate", nz(d.rhr) ? `${num(d.rhr)}<small> bpm</small>` : "–",
-      [nz(d.hrMin) ? `Range ${num(d.hrMin)}–${num(d.hrMax)}` : "", isLive && DATA.intraday.rhr7dayAvg ? `7-day avg ${num(DATA.intraday.rhr7dayAvg)}` : ""].filter(Boolean).join("<br>")),
-    tile("Stress", nz(d.stressAvg) ? `${num(d.stressAvg)}<small> avg</small>` : "–",
-      nz(d.stressMax) ? `Max ${num(d.stressMax)}${d.stressQualifier && d.stressQualifier !== "unknown" ? " · " + esc(humanize(d.stressQualifier)) : ""}` : ""),
-    tile("Sleep", sl ? dur(sl.total) : "–", sl ? `${nz(sl.score) ? "Score " + num(sl.score) + " · " : ""}${status(sl.quality)}` : "No sleep recorded"),
+  // Recovery: how well the body bounced back overnight
+  section(view, [
     tile("HRV (overnight)", hrv && nz(hrv.avg) ? `${num(hrv.avg)}<small> ms</small>` : "–",
-      hrv ? `${status(hrv.status)}${nz(hrv.weekly) ? `<br>7-day avg ${num(hrv.weekly)} ms` : ""}` : ""),
-    tile("Intensity minutes", num((d.imModerate || 0) + 2 * (d.imVigorous || 0)),
-      `${num(d.imModerate || 0)} moderate · ${num(d.imVigorous || 0)} vigorous<br>This week ${num(wk)} / ${num(d.imGoal || 150)}`, meter(wk / (d.imGoal || 150))),
-    tile("Calories", nz(d.kcalTotal) ? `${num(d.kcalTotal)}<small> kcal</small>` : "–", nz(d.kcalActive) ? `${num(d.kcalActive)} active · ${num(d.kcalResting)} resting` : ""),
-    tile("Floors climbed", num(d.floors), nz(d.floorsGoal) ? `Goal ${num(d.floorsGoal)}` : "", nz(d.floorsGoal) ? meter(d.floors / d.floorsGoal) : ""),
-    tile("Respiration", nz(d.respAvg) ? `${num(d.respAvg)}<small> brpm</small>` : "–", nz(d.respMin) ? `Range ${num(d.respMin)}–${num(d.respMax)}` : ""),
-    tile("Weight", w ? weight(w.weightKg) : "–", w ? (w.date === state.day ? "Weighed today" : `Last weighed ${fmtDay(w.date)}`) + (w.bodyFat ? ` · ${num(w.bodyFat, 1)}% fat` : "") : "No weigh-ins"),
-  ];
-  if (d.hydrationMl) tiles.push(tile("Hydration", `${num(d.hydrationMl)}<small> ml</small>`, d.hydrationGoalMl ? `Goal ${num(d.hydrationGoalMl)} ml` : ""));
-  section(view, tiles.join(""), "tiles");
+      hrv ? `${status(hrv.status)}${nz(hrv.weekly) ? `<br>7-day avg ${num(hrv.weekly)} ms` : ""}${hrv.low ? ` · normal ${num(hrv.low)}–${num(hrv.high)}` : ""}` : "No reading"),
+    tile("Resting heart rate", nz(d.rhr) ? `${num(d.rhr)}<small> bpm</small>` : "–", vsBaseline(d.rhr, baseline((x) => x.rhr, state.day), "bpm")),
+    tile("Sleep", sl ? dur(sl.total) : "–",
+      sl ? `${nz(sl.score) ? "Score " + num(sl.score) + " · " : ""}${status(sl.quality)}${sl.needMinutes ? `<br>Need ${dur(sl.needMinutes * 60)}` : ""}` : "No sleep recorded"),
+    tile("Overnight breathing", sl && nz(sl.respAvg) ? `${num(sl.respAvg)}<small> brpm</small>` : "–",
+      sl && nz(sl.respAvg) ? vsBaseline(sl.respAvg, baseline((x) => x.sleep?.respAvg, state.day), "brpm") : ""),
+  ].join(""), "tiles");
 
-  if (isLive && DATA.intraday.hr.length) {
-    const hr = DATA.intraday.hr;
-    chartCard(view, "Heart rate today", {
-      type: "line", x: hr.map((p) => p[0]), labels: hr.map((p) => clockReal(p[0])), series: [{ name: "Heart rate", color: css("--s1"), values: hr.map((p) => p[1]) }],
-      yFmt: (v) => `${num(v)} bpm`, noTable: true, height: 160,
-    }, nz(d.rhr) ? `Resting ${num(d.rhr)} bpm · range ${num(d.hrMin)}–${num(d.hrMax)} bpm` : "");
-  }
-  if (isLive && DATA.intraday.bodyBattery.length > 1) {
-    const bb = DATA.intraday.bodyBattery;
-    chartCard(view, "Body Battery today", {
-      type: "line", x: bb.map((p) => p[0]), labels: bb.map((p) => clockReal(p[0])), series: [{ name: "Body Battery", color: css("--s1"), values: bb.map((p) => p[1]) }],
-      yMin: 0, yMax: 100, dots: true, noTable: true, height: 150,
-    });
-  }
+  const last14 = DATA.days.filter((x) => x.date <= state.day).slice(-14);
+  const labels = last14.map((x) => fmtDay(x.date, { day: "numeric", month: "short" }));
+  const tipLabels = last14.map((x) => fmtDay(x.date));
+  const grid = section(view, "", "grid2");
+  chartCard(grid, "HRV · last 14 nights", {
+    type: "line", labels, tipLabels, noTable: true, height: 150,
+    series: [{ name: "HRV", color: css("--s1"), values: last14.map((x) => x.hrv?.avg) }],
+    band: { lo: last14.map((x) => x.hrv?.low), hi: last14.map((x) => x.hrv?.high) }, yFmt: (v) => `${num(v)} ms`,
+  }, "Shaded area = your normal range. Below it usually means you need more recovery.");
+  chartCard(grid, "Resting heart rate · last 14 days", {
+    type: "line", labels, tipLabels, noTable: true, height: 150,
+    series: [{ name: "Resting HR", color: css("--s1"), values: last14.map((x) => x.rhr) }], yFmt: (v) => `${num(v)} bpm`,
+  }, "A few beats above normal can mean fatigue, stress or illness.");
 
-  if (d.stressSeconds) {
-    const s = d.stressSeconds, c = HR_COLORS();
-    const parts = [
-      { label: "Rest", value: s.rest, color: c[0] }, { label: "Low", value: s.low, color: c[1] },
-      { label: "Medium", value: s.medium, color: c[2] }, { label: "High", value: s.high, color: c[4] },
-    ].map((p) => ({ ...p, text: dur(p.value) }));
-    section(view, `<h2>Stress breakdown</h2>${stackBar(parts)}<p class="note">Also ${dur(s.activity)} during activity and ${dur(s.unmeasured)} not measured. Scale 0–100: rest 0–25, low 26–50, medium 51–75, high 76–100.</p>`);
-  }
+  // Workouts
+  const acts = DATA.activities.filter((a) => actDate(a) === state.day);
+  const latest = DATA.activities.find((a) => actDate(a) < state.day);
+  section(view, acts.length ? `<h2>Workouts</h2>${actList(acts)}`
+    : `<h2>Rest day</h2><p class="empty">No workouts this day.</p>${latest ? `<h3 style="margin-top:6px">Latest workout</h3>${actList([latest])}` : ""}`);
 
-  if (d.bbFeedback || (d.bbEvents || []).length) {
-    section(view, `<h2>Body Battery events</h2>${!(d.bbEvents || []).length ? "" : rows(d.bbEvents.map((e) => [
-      `${humanize(e.type)} · ${clockStr(e.start)}`, `${e.impact > 0 ? "+" : ""}${num(e.impact)} <span class="muted">(${dur(e.minutes * 60)})</span>`]))}
-      ${d.bbFeedback ? `<p class="note">${esc(humanize(d.bbFeedback))}</p>` : ""}`);
-  }
-
-  const acts = DATA.activities.filter((a) => a.startTimeLocal.startsWith(state.day));
-  section(view, `<h2>Activities</h2>${actList(acts, "No activities this day.")}`);
+  // Training this week vs last week
+  const wk = (from, to) => {
+    const list = DATA.activities.filter((a) => actDate(a) >= from && actDate(a) < to);
+    return { n: list.length, t: list.reduce((x, a) => x + actTime(a), 0), load: list.reduce((x, a) => x + (a.activityTrainingLoad || 0), 0) };
+  };
+  const mon = mondayOf(localToday());
+  const thisWk = wk(mon, addDays(mon, 7)), lastWk = wk(addDays(mon, -7), mon);
+  section(view, [
+    tile("This week", `${num(thisWk.n)}<small> workouts</small>`, `${dur(thisWk.t)} · training load ${num(thisWk.load)}`),
+    tile("Last week", `${num(lastWk.n)}<small> workouts</small>`, `${dur(lastWk.t)} · training load ${num(lastWk.load)}`),
+  ].join(""), "tiles");
 }
 
 function renderSleep(view) {
@@ -694,7 +686,6 @@ function renderSleep(view) {
     ["Fell asleep", clockLocal(s.start)], ["Woke up", clockLocal(s.end)],
     ["Time asleep", dur(s.total)], ["Awake time", dur(s.awake)], ["Times awake", nz(s.awakeCount) ? num(s.awakeCount) : null],
     ["Avg heart rate", s.avgHR ? `${num(s.avgHR)} bpm` : null],
-    ["Avg stress", nz(s.avgStress) ? num(s.avgStress) : null],
     ["Respiration", s.respAvg ? `${num(s.respAvg)} brpm <span class="muted">(${num(s.respMin)}–${num(s.respMax)})</span>` : null],
     ["Overnight HRV", hrv && hrv.avg ? `${num(hrv.avg)} ms ${status(hrv.status)}` : null],
     ["HRV 5-min high", hrv && hrv.high5 ? `${num(hrv.high5)} ms` : null],
@@ -731,24 +722,16 @@ function renderActivities(view) {
   const list = DATA.activities.filter((a) => state.actType === "all" || a.type === state.actType);
 
   // Totals for this week and last 4 weeks
-  const today = dayDate(localToday());
-  const monday = new Date(today - ((today.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
-  const four = new Date(today - 27 * 86400000).toISOString().slice(0, 10);
+  const monday = mondayOf(localToday()), four = addDays(localToday(), -27);
   const sum = (arr) => ({ n: arr.length, t: arr.reduce((x, a) => x + actTime(a), 0), d: arr.reduce((x, a) => x + (a.distance || 0), 0) });
-  const wk = sum(list.filter((a) => a.startTimeLocal.slice(0, 10) >= monday));
-  const m4 = sum(list.filter((a) => a.startTimeLocal.slice(0, 10) >= four));
+  const wk = sum(list.filter((a) => actDate(a) >= monday));
+  const m4 = sum(list.filter((a) => actDate(a) >= four));
   section(view, [
-    tile("This week", `${num(wk.n)}<small> activities</small>`, `${dur(wk.t)}${wk.d ? " · " + dist(wk.d, 1) : ""}`),
-    tile("Last 4 weeks", `${num(m4.n)}<small> activities</small>`, `${dur(m4.t)}${m4.d ? " · " + dist(m4.d, 1) : ""}`),
+    tile("This week", `${num(wk.n)}<small> workouts</small>`, `${dur(wk.t)}${wk.d ? " · " + dist(wk.d, 1) : ""}`),
+    tile("Last 4 weeks", `${num(m4.n)}<small> workouts</small>`, `${dur(m4.t)}${m4.d ? " · " + dist(m4.d, 1) : ""}`),
   ].join(""), "tiles");
 
-  // Weekly training time chart (last 12 weeks)
-  const weeks = [];
-  for (let k = 11; k >= 0; k--) {
-    const start = new Date(dayDate(monday) - k * 7 * 86400000), end = new Date(+start + 7 * 86400000);
-    const s = start.toISOString().slice(0, 10), e = end.toISOString().slice(0, 10);
-    weeks.push({ s, v: list.filter((a) => a.startTimeLocal.slice(0, 10) >= s && a.startTimeLocal.slice(0, 10) < e).reduce((x, a) => x + actTime(a), 0) / 3600 });
-  }
+  const weeks = weekly(list, (a) => actTime(a) / 3600, 12);
   chartCard(view, "Training time per week", {
     type: "bar", labels: weeks.map((w) => fmtDay(w.s, { day: "numeric", month: "short" })), tipLabels: weeks.map((w) => `Week of ${fmtDay(w.s)}`),
     series: [{ name: "Hours", color: css("--s1"), values: weeks.map((w) => w.v) }], yFmt: (v) => dur(v * 3600), axisFmt: (v) => `${v}h`, xName: "Week",
@@ -758,52 +741,73 @@ function renderActivities(view) {
 }
 
 function renderTrends(view) {
-  const chips = section(view, [[7, "7 days"], [30, "30 days"], [90, "90 days"], [365, "1 year"]].map(([v, t]) =>
+  const chips = section(view, [[30, "30 days"], [90, "90 days"], [180, "6 months"], [365, "1 year"]].map(([v, t]) =>
     `<button class="chip ${state.range === v ? "active" : ""}" data-range="${v}">${t}</button>`).join(""), "chips");
   chips.querySelectorAll(".chip").forEach((b) => b.onclick = () => { state.range = +b.dataset.range; render(); });
 
   const days = DATA.days.slice(-state.range);
+  const from = days[0].date;
   const labels = days.map((d) => fmtDay(d.date, { day: "numeric", month: "short" }));
   const tipLabels = days.map((d) => fmtDay(d.date));
-  const blue = css("--s1");
-  const avg = (vals) => { const v = vals.filter(nz); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
-  const one = (name, values, extra = {}) => ({ type: "line", labels, tipLabels, series: [{ name, color: blue, values }], ...extra,
-    headRight: `<span class="muted small">avg ${extra.yFmt ? extra.yFmt(avg(values)) : num(avg(values))}</span>` });
-
+  const [c1, c2] = [css("--s1"), css("--s2")];
+  const short = (s) => fmtDay(s, { day: "numeric", month: "short" });
+  const avgNote = (v, f) => `<span class="muted small">avg ${nz(v) ? f(v) : "–"}</span>`;
   const grid = section(view, "", "grid2");
-  chartCard(grid, "Resting heart rate", one("Resting HR", days.map((d) => d.rhr), { yFmt: (v) => `${num(v)} bpm` }));
-  chartCard(grid, "Overnight HRV", one("HRV", days.map((d) => d.hrv?.avg), {
-    yFmt: (v) => `${num(v)} ms`, band: { lo: days.map((d) => d.hrv?.low), hi: days.map((d) => d.hrv?.high) } }),
-    "Shaded area = your normal (balanced) range.");
-  chartCard(grid, "Sleep duration", { ...one("Sleep", days.map((d) => d.sleep ? d.sleep.total / 3600 : null), { yFmt: (v) => dur(v * 3600), axisFmt: (v) => `${v}h` }), type: "bar" });
-  chartCard(grid, "Sleep score", one("Score", days.map((d) => d.sleep?.score), { yMax: 100 }));
-  const stepGoal = avg(days.map((d) => d.stepGoal));
-  chartCard(grid, "Steps", { ...one("Steps", days.map((d) => d.steps)), type: "bar", goal: stepGoal }, stepGoal ? `Line = average step goal (${num(stepGoal)}).` : "");
-  chartCard(grid, "Average stress", one("Stress", days.map((d) => d.stressAvg)));
-  chartCard(grid, "Body Battery", {
-    type: "line", labels, tipLabels, yMin: 0, yMax: 100, headRight: "",
-    series: [{ name: "Highest", color: css("--s1"), values: days.map((d) => d.bbMax) }, { name: "Lowest", color: css("--s2"), values: days.map((d) => d.bbMin) }],
-  });
-  chartCard(grid, "Active calories", { ...one("Active kcal", days.map((d) => d.kcalActive), { yFmt: (v) => `${num(v)} kcal` }), type: "bar" });
-  chartCard(grid, "Respiration", one("Breaths/min", days.map((d) => d.respAvg), { yFmt: (v) => `${num(v)} brpm` }));
 
-  // Weekly intensity minutes
-  const wkMap = new Map();
-  days.forEach((d) => {
-    const dt = dayDate(d.date), mon = new Date(dt - ((dt.getUTCDay() + 6) % 7) * 86400000).toISOString().slice(0, 10);
-    wkMap.set(mon, (wkMap.get(mon) || 0) + (d.imModerate || 0) + 2 * (d.imVigorous || 0));
-  });
-  const wks = [...wkMap.entries()];
-  const goal = days[days.length - 1]?.imGoal || 150;
-  chartCard(grid, "Intensity minutes per week", {
-    type: "bar", labels: wks.map(([k]) => fmtDay(k, { day: "numeric", month: "short" })), tipLabels: wks.map(([k]) => `Week of ${fmtDay(k)}`),
-    series: [{ name: "Minutes", color: blue, values: wks.map(([, v]) => v) }], goal, xName: "Week",
-  }, `Line = weekly goal (${num(goal)}). Vigorous minutes count double. First week may be partial.`);
+  // Recovery markers
+  const rhr = days.map((d) => d.rhr);
+  chartCard(grid, "Resting heart rate", {
+    type: "line", labels, tipLabels, yFmt: (v) => `${num(v)} bpm`, headRight: avgNote(avg(rhr), (v) => `${num(v)} bpm`),
+    series: [{ name: "Daily", color: c1, values: rhr }, { name: "7-day average", color: c2, values: rolling(rhr) }],
+  }, "A falling trend over weeks means your heart is getting fitter.");
+  const hrvVals = days.map((d) => d.hrv?.avg);
+  chartCard(grid, "Overnight HRV", {
+    type: "line", labels, tipLabels, yFmt: (v) => `${num(v)} ms`, headRight: avgNote(avg(hrvVals), (v) => `${num(v)} ms`),
+    series: [{ name: "Nightly", color: c1, values: hrvVals }, { name: "7-day average", color: c2, values: days.map((d) => d.hrv?.weekly) }],
+    band: { lo: days.map((d) => d.hrv?.low), hi: days.map((d) => d.hrv?.high) },
+  }, "Shaded area = your normal range. A rising 7-day average means you're handling training well.");
 
-  const wDays = DATA.days.filter((d) => d.weightKg && d.date >= days[0].date);
+  // Running fitness: distance covered per heartbeat
+  const runs = DATA.activities.filter((a) => isRealRun(a) && a.averageHR && a.averageSpeed && actDate(a) >= from).reverse();
+  if (runs.length) chartCard(grid, "Running efficiency", {
+    type: "line", labels: runs.map((a) => short(actDate(a))), xName: "Run",
+    tipLabels: runs.map((a) => `${fmtDay(actDate(a))} · ${dist(a.distance, 1)} · ${pace(a.averageSpeed)} ${paceUnit()} · ${num(a.averageHR)} bpm`),
+    series: [{ name: "Metres per heartbeat", color: c1, values: runs.map((a) => (a.averageSpeed * 60) / a.averageHR) }],
+    yFmt: (v) => `${num(v, 2)} m per beat`, axisFmt: (v) => v.toFixed(2), dots: runs.length < 40,
+  }, "How far you run per heartbeat. Going up = faster at the same effort, the clearest sign your running fitness is improving.");
+
+  // Swimming: pace and efficiency
+  const swims = DATA.activities.filter((a) => isSwim(a) && a.averageSpeed && actDate(a) >= from).reverse();
+  if (swims.length) {
+    const per = metric() ? 100 : 91.44, unit = metric() ? "/100 m" : "/100 yd";
+    const sl = swims.map((a) => short(actDate(a))), st = swims.map((a) => `${fmtDay(actDate(a))} · ${dist(a.distance)}`);
+    chartCard(grid, "Swim pace", {
+      type: "line", labels: sl, tipLabels: st, xName: "Swim", dots: swims.length < 40,
+      series: [{ name: "Pace", color: c1, values: swims.map((a) => per / a.averageSpeed) }],
+      yFmt: (v) => `${dur(v, "clock")} ${unit}`, axisFmt: (v) => dur(v, "clock"),
+    }, `Average pace while swimming (${unit}). Lower = faster.`);
+    const swolf = swims.map((a) => a.averageSwolf || null);
+    if (swolf.some(nz)) chartCard(grid, "SWOLF", {
+      type: "line", labels: sl, tipLabels: st, xName: "Swim", dots: swims.length < 40,
+      series: [{ name: "SWOLF", color: c1, values: swolf }],
+    }, "Strokes plus seconds per length. Lower = more efficient technique.");
+  }
+
+  // Training load per week
+  // Start at the chosen range or the first recorded workout, whichever is later.
+  const firstAct = DATA.activities.length ? actDate(DATA.activities[DATA.activities.length - 1]) : from;
+  const startWk = mondayOf(firstAct > from ? firstAct : from);
+  const nWeeks = Math.max(1, Math.round((dayDate(mondayOf(localToday())) - dayDate(startWk)) / 604800000) + 1);
+  const load = weekly(DATA.activities, (a) => a.activityTrainingLoad, nWeeks);
+  chartCard(grid, "Training load per week", {
+    type: "bar", labels: load.map((w) => short(w.s)), tipLabels: load.map((w) => `Week of ${fmtDay(w.s)}`), xName: "Week",
+    series: [{ name: "Load", color: c1, values: load.map((w) => w.v) }],
+  }, "Garmin's training load for all workouts added up. Increase it gradually; this week may be incomplete.");
+
+  const wDays = DATA.days.filter((d) => d.weightKg && d.date >= from);
   if (wDays.length) chartCard(grid, "Weight", {
-    type: "line", labels: wDays.map((d) => fmtDay(d.date, { day: "numeric", month: "short" })), tipLabels: wDays.map((d) => fmtDay(d.date)),
-    series: [{ name: "Weight", color: blue, values: wDays.map((d) => metric() ? d.weightKg : d.weightKg * 2.20462) }],
+    type: "line", labels: wDays.map((d) => short(d.date)), tipLabels: wDays.map((d) => fmtDay(d.date)),
+    series: [{ name: "Weight", color: c1, values: wDays.map((d) => metric() ? d.weightKg : d.weightKg * 2.20462) }],
     yFmt: (v) => `${num(v, 1)} ${metric() ? "kg" : "lb"}`, dots: wDays.length < 40,
   });
 
