@@ -527,13 +527,14 @@ function readiness(day = DATA.days[DATA.days.length - 1].date) {
 function readinessCard(view, day) {
   const r = readiness(day);
   const bars = r.parts.map((p) => `<div class="focus"><div class="focus-top"><span>${esc(p.label)}</span><span><b>${p.score}</b> <small class="muted">${esc(p.detail)}</small></span></div>${meter(p.score / 100)}</div>`).join("");
-  section(view, `<div class="card-head"><h2>Readiness</h2><span class="muted small">Estimated</span></div>
+  section(view, `<div class="card-head"><h2>Readiness</h2></div>
     <div class="ready"><span class="ready-score">${r.score ?? "–"}</span><div>${statusBadge(r, true)}<p class="note" style="margin-top:2px">${esc(r.reason)}</p></div></div>
-    ${bars}
-    ${DATA.hevy ? `<h3 style="margin-top:12px">Muscle freshness</h3>${rows(freshness(day).map((f) => [f.label, `<span class="status ${f.fresh ? "good" : "warning"}">${f.fresh ? "Fresh" : "Recovering"}</span> <span class="muted small">${f.text}</span>`]))}` : ""}
-    <details><summary>How this is calculated</summary>
-      <p class="note">A 0–100 estimate of how ready you are to train hard today. Garmin's own Training Readiness isn't available, so this blends four things: HRV (30%), sleep (25%), resting heart rate (15%) and how much recent training is still weighing on you (30%). Training load fades with a half-life of about a day and a half, and is compared with your normal daily load.</p>
-      <p class="note">${DATA.hevy ? `Lifting counts through an estimated gym load from Hevy (hard sets × ${HV.loadPerSet}), because Garmin under-counts it. Muscle freshness shows which muscle groups had a hard session in the last ${HV.freshDays} days.` : "Lifting currently counts through Garmin's own load, which under-counts it."}</p>
+    <details><summary>Show details</summary>
+      ${bars}
+      ${DATA.hevy ? `<h3 style="margin-top:12px">Muscle freshness</h3>${rows(freshness(day).map((f) => [f.label, `<span class="status ${f.fresh ? "good" : "warning"}">${f.fresh ? "Fresh" : "Recovering"}</span> <span class="muted small">${f.text}</span>`]))}` : ""}
+      <h3 style="margin-top:12px">How this is calculated</h3>
+      <p class="note">A 0–100 score for how ready you are to train hard today, from four things: HRV (30%), sleep (25%), resting heart rate (15%) and how much recent training is still weighing on you (30%). Training load fades with a half-life of about a day and a half and is compared with your normal daily load.</p>
+      ${DATA.hevy ? `<p class="note">Lifting counts as gym load from Hevy (hard sets × ${HV.loadPerSet}). Muscle freshness shows which muscle groups had a hard session in the last ${HV.freshDays} days.</p>` : ""}
     </details>`);
 }
 
@@ -698,7 +699,7 @@ function gymStatus(day = DATA.days[DATA.days.length - 1].date) {
     const up = changes.filter((c) => judge(c.cur, c.prev, HV.trendTol) === "up").length, down = changes.filter((c) => judge(c.cur, c.prev, HV.trendTol) === "down").length;
     const sc = (up - down) / changes.length;
     add("lifts", "Lift progress", 2, sc > GS.trendCut ? "up" : sc < -GS.trendCut ? "down" : "flat",
-      `${up} of ${changes.length} main lifts up, ${down} down (best estimated 1RM, last 4 weeks vs the 4 before)`);
+      `${up} of ${changes.length} main lifts up, ${down} down (best 1RM, last 4 weeks vs the 4 before)`);
   }
   const setsIn = (lo, hi) => inWin(ev, (e) => e.date, lo, hi).reduce((s, e) => s + (e.w ? hevyStats(e.w).sets : 0), 0);
   const s1 = setsIn(0, 28), s0 = setsIn(28, 56);
@@ -756,7 +757,7 @@ function strengthSwimLink() {
 
 // ----- UI -----
 
-function hevyTitle(label) { return `<div class="card-head"><h2>${label}</h2><span class="muted small">${DATA.demo ? "Demo data" : "Estimated"}</span></div>`; }
+function hevyTitle(label) { return `<div class="card-head"><h2>${label}</h2>${DATA.demo ? `<span class="muted small">Demo data</span>` : ""}</div>`; }
 
 function gymCard(view, day) {
   const g = gymStatus(day);
@@ -766,18 +767,19 @@ function gymCard(view, day) {
 function gymDetail(view) {
   const g = gymStatus();
   const arrow = { up: "Improving ↑", down: "Slipping ↓", flat: "Steady →" };
-  const lifts = (g.lifts || []).map((c) => [c.name, `${lift(c.cur)} <span class="muted small">est. 1RM now vs ${lift(c.prev)}</span>`]);
+  const lifts = (g.lifts || []).map((c) => [c.name, `${lift(c.cur)} <span class="muted small">1RM now vs ${lift(c.prev)}</span>`]);
   section(view, `${hevyTitle("Gym status")}${statusBadge(g, true)}<p class="note">${esc(g.reason)}</p>
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(g.load7), "last 7 days")}
       ${tile("4-week average", num(g.chronic), "per week")}
       <div style="grid-column:1/-1">${tile("Load ratio", g.ratio === null ? "–" : `${num(g.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((g.ratio || 0) / 2))}</div>
     </div>
-    <h3 style="margin-top:14px">Strength signals</h3>
-    ${g.signals.length ? rows(g.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`])) : `<p class="empty">Not enough data yet.</p>`}
-    ${lifts.length ? `<h3 style="margin-top:14px">Main lifts</h3>${rows(lifts)}` : ""}
+    <details><summary>Show strength signals</summary>
+      ${g.signals.length ? rows(g.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`])) : `<p class="empty">Not enough data yet.</p>`}
+      ${lifts.length ? `<h3 style="margin-top:12px">Main lifts</h3>${rows(lifts)}` : ""}
+    </details>
     <details><summary>How this is calculated</summary>
-      <p class="note">Gym load is an estimate: hard sets (warm-ups excluded) × ${HV.loadPerSet}, because Garmin counts lifting far too low. The ratio compares the last 7 days with your 4-week weekly average. Progress compares the best estimated 1-rep max (weight × (1 + reps ÷ 30), sets of ${HV.e1rmMaxReps} reps or fewer) on each lift over the last 4 weeks with the 4 before; lifts count double and weekly hard sets count once.</p>
+      <p class="note">Gym load is hard sets (warm-ups excluded) × ${HV.loadPerSet}. The ratio compares the last 7 days with your 4-week weekly average. Progress compares the best 1-rep max (weight × (1 + reps ÷ 30), sets of ${HV.e1rmMaxReps} reps or fewer) on each lift over the last 4 weeks with the 4 before; lifts count double and weekly hard sets count once.</p>
       <p class="note">It is judged separately from aerobic status: your swimming can improve while your lifts don't, and the reverse.</p>
     </details>`);
 }
@@ -812,16 +814,16 @@ function renderStrength(view) {
     const chips = section(view, hist.map((l) => `<button class="chip ${l.key === state.lift ? "active" : ""}" data-lift="${esc(l.key)}">${esc(l.name)}</button>`).join(""), "chips");
     chips.querySelectorAll(".chip").forEach((b) => b.onclick = () => { state.lift = b.dataset.lift; render(); });
     const best = Math.max(...cur.points.map((p) => p.e1rm));
-    chartCard(view, `${cur.name} · estimated 1RM`, {
+    chartCard(view, `${cur.name} · 1RM`, {
       type: "line", labels: cur.points.map((p) => fmtDay(p.date, { day: "numeric", month: "short" })), xName: "Session",
       tipLabels: cur.points.map((p) => `${fmtDay(p.date)} · best set ${lift(p.kg)} × ${p.reps}`),
-      series: [{ name: "Estimated 1RM", color: css("--s1"), values: cur.points.map((p) => (metric() ? p.e1rm : p.e1rm * 2.20462)) }],
+      series: [{ name: "1RM", color: css("--s1"), values: cur.points.map((p) => (metric() ? p.e1rm : p.e1rm * 2.20462)) }],
       yFmt: (v) => `${num(v)} ${metric() ? "kg" : "lb"}`, headRight: `<span class="muted small">best ${lift(best)}</span>`, dots: cur.points.length < 40,
-    }, "Estimated one-rep max from your best set each session. Going up = getting stronger.");
+    }, "One-rep max (1RM) from your best set each session. Going up = getting stronger.");
   }
 
   const prs = recentPRs();
-  section(view, `<h2>Recent personal records</h2>${prs.length ? rows(prs.map((p) => [p.name, `${lift(p.kg)} × ${p.reps} <span class="muted small">est. 1RM ${lift(p.e1rm)} · ${esc(fmtDay(p.date))}</span>`])) : `<p class="empty">No new records yet.</p>`}`);
+  section(view, `<h2>Recent personal records</h2>${prs.length ? rows(prs.map((p) => [p.name, `${lift(p.kg)} × ${p.reps} <span class="muted small">1RM ${lift(p.e1rm)} · ${esc(fmtDay(p.date))}</span>`])) : `<p class="empty">No new records yet.</p>`}`);
 
   // Lifting vs swimming and recovery
   const link = strengthSwimLink();
@@ -829,7 +831,7 @@ function renderStrength(view) {
     ? [s.label, `${s.fmt(s.ma)} vs ${s.fmt(s.mb)} <span class="muted small">${s.ma === s.mb ? "same" : `${Math.abs(((s.ma - s.mb) / s.mb) * 100).toFixed(1)}% ${(s.ma > s.mb) === !s.lowerBetter ? "better" : "worse"}`} · ${s.a.length} vs ${s.b.length}</span>`]
     : [s.label, `<span class="muted small">needs more data: ${s.a.length} vs ${s.b.length}, need ${HV.pairMinN}+ in each</span>`]);
   section(view, `<h2>Lifting, recovery and swimming</h2>${rows(items)}
-    <p class="note">Compares the day after lifting with the day after other days. Differences under about 5% are normal day-to-day noise, so treat this as a hint, not proof.</p>`);
+    <p class="note">Compares the day after lifting with the day after other days.</p>`);
 }
 
 // Rough healthy shares of 28-day load. A guide only, not Garmin's targets.
@@ -846,7 +848,7 @@ function statusBadge(ts, big = false) {
 // Small card for the Today tab.
 function statusCard(view, day) {
   const ts = trainingStatus(day);
-  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Estimated · swim, run, walk</span></div>
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Swim · run · walk</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>`);
 }
 
@@ -865,22 +867,23 @@ function statusDetail(view) {
     ? rows(ts.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`]))
     : `<p class="empty">Not enough data yet.</p>`;
   const swimSig = ts.signals.some((s) => s.key === "swimEff");
-  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Estimated – not Garmin's number</span></div>
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Swim · run · walk</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(ts.load7), "last 7 days")}
       ${tile("4-week average", num(ts.chronic), "per week")}
       <div style="grid-column:1/-1">${tile("Load ratio", ts.ratio === null ? "–" : `${num(ts.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((ts.ratio || 0) / 2))}</div>
     </div>
-    <h3 style="margin-top:14px">Fitness signals</h3>
-    ${sigRows}
-    ${swimSig ? "" : `<p class="note">Swim signals need at least ${TS.swimMinN} swims of ${dist(TS.swimMinDist)}+ in each of the last two 4-week periods.</p>`}
+    <details><summary>Show fitness signals</summary>
+      ${sigRows}
+      ${swimSig ? "" : `<p class="note">Swim signals need at least ${TS.swimMinN} swims of ${dist(TS.swimMinDist)}+ in each of the last two 4-week periods.</p>`}
+    </details>
     <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
     <details><summary>How this is calculated</summary>
-      <p class="note">Garmin doesn't share Training Status (it needs VO2 max), so this is an estimate from your data. It covers cardio only (swimming, running, walking); lifting is judged separately so one can't hide the other.</p>
+      <p class="note">Covers cardio only (swimming, running, walking); lifting is judged separately so one can't hide the other.</p>
       <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
       <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim efficiency (metres per minute per heartbeat, swims over ${dist(TS.swimMinDist)}) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and, when you have enough runs, running efficiency. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
-      <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight). The ranges shown are a rough guide, not Garmin's targets.</p>
+      <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight).</p>
     </details>`);
 }
 
@@ -1200,7 +1203,7 @@ function openActivity(id) {
     const h = hevyStats(a.hevy);
     const setText = (x) => `${x.kg > 0 ? lift(x.kg) + " × " : ""}${num(x.reps)}`;
     const tbl = a.hevy.exercises.map((ex) => `<tr><td>${esc(exName(ex))}</td><td>${(ex.sets || []).map((x) => (x.type === "warmup" ? `<span class="muted">${esc(setText(x))}</span>` : esc(setText(x)))).join(", ")}</td></tr>`).join("");
-    html += `<section class="card"><h2>Strength · from Hevy</h2>${rows([["Exercises", num(h.exercises)], ["Hard sets", num(h.sets)], ["Volume", volText(h.volume)], ["Estimated gym load", num(hevyLoad(a.hevy))]])}
+    html += `<section class="card"><h2>Strength · from Hevy</h2>${rows([["Exercises", num(h.exercises)], ["Hard sets", num(h.sets)], ["Volume", volText(h.volume)], ["Gym load", num(hevyLoad(a.hevy))]])}
       <div class="table-wrap"><table><tr><th>Exercise</th><th>Sets (warm-ups grey)</th></tr>${tbl}</table></div></section>`;
   } else if (a.totalSets || a.exerciseSets) {
     const ex = (a.exerciseSets || []).filter((x) => x.sets);
@@ -1415,7 +1418,9 @@ function renderActivities(view) {
     series: [{ name: "Hours", color: css("--s1"), values: weeks.map((w) => w.v) }], yFmt: (v) => dur(v * 3600), axisFmt: (v) => `${v}h`, xName: "Week",
   });
 
-  section(view, `<h2>${list.length} ${state.actType === "all" ? "activities" : esc(humanize(state.actType))}</h2>${actList(list)}`);
+  const SHOWN = 7, rest = list.slice(SHOWN);
+  section(view, `<h2>${list.length} ${state.actType === "all" ? "activities" : esc(humanize(state.actType))}</h2>${actList(list.slice(0, SHOWN))}
+    ${rest.length ? `<details><summary>Show all ${list.length} (${rest.length} more)</summary>${rest.map(actItem).join("")}</details>` : ""}`);
 }
 
 function renderTrends(view) {
