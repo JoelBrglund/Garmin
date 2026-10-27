@@ -368,6 +368,8 @@ const VO = {
   longRunMin: 40,             // longer runs drift in heart rate; they only count when there are too few others
   runOffset: -2.0,            // fitted to the watch's value (56-57)
   swimMinDist: 1500, swimHrMax: 181, swimHrrLo: 0.45, swimHrrHi: 0.95,
+  swimTechSwolf: 1.08,        // swims with SWOLF this far above your usual in that pool look like drill/technique sessions and are left out
+  smoothRun: 3, smoothSwim: 5, // sessions in the chart's rolling median
   swimScale: 34.3,            // makes a typical recent swim read about the same as the running value
   currentDays: 42, minN: 2, tol: 0.02,
 };
@@ -378,6 +380,13 @@ function vo2Points(kind) {
   const zone = (DATA.hrZones || []).find((z) => z.sport === "RUNNING") || (DATA.hrZones || [])[0] || {};
   const runMax = zone.maxHeartRateUsed || 194, zoneRest = zone.restingHeartRateUsed || 48;
   const out = [];
+  const poolOf = (a) => (a.poolLength > 0 ? Math.round(a.poolLength / 100) : 0);
+  const usualSwolf = new Map(); // your usual SWOLF per pool length
+  if (kind === "swim") {
+    const by = new Map();
+    DATA.activities.filter((a) => isSwim(a) && a.averageSwolf > 0).forEach((a) => { const k = poolOf(a); if (!by.has(k)) by.set(k, []); by.get(k).push(a.averageSwolf); });
+    by.forEach((v, k) => usualSwolf.set(k, median(v)));
+  }
   DATA.activities.forEach((a) => {
     if (!a.averageHR) return;
     const rest = rhr.get(actDate(a)) ?? zoneRest;
@@ -389,7 +398,8 @@ function vo2Points(kind) {
     } else if (kind === "swim" && isSwim(a)) {
       const secs = a.movingDuration || a.duration, hrr = (a.averageHR - rest) / (VO.swimHrMax - rest);
       if (!(secs > 0) || a.distance < VO.swimMinDist || hrr < VO.swimHrrLo || hrr > VO.swimHrrHi) return;
-      const pool = a.poolLength > 0 ? Math.round(a.poolLength / 100) : 0;
+      const pool = poolOf(a);
+      if (a.averageSwolf > 0 && usualSwolf.get(pool) && a.averageSwolf > usualSwolf.get(pool) * VO.swimTechSwolf) return; // drill / technique session
       out.push({ date: actDate(a), value: (VO.swimScale * (a.distance / secs)) / hrr, long: false, pool,
         tip: `${fmtDay(actDate(a))} · ${dist(a.distance)} · ${pool ? pool + " m pool" : "open water"}` });
     }
@@ -430,9 +440,9 @@ function vo2Tiles(view) {
 function vo2Charts(grid, from, short) {
   const c = [css("--s1"), css("--s2")];
   // Single sessions swing a lot, so the line is the median of the last 3 sessions (same pool for swims); hover shows the single value.
-  const smooth = (pts) => pts.map((p, i) => ({ ...p, line: median(pts.slice(Math.max(0, i - 2), i + 1).map((x) => x.value)) }));
+  const smooth = (pts, n) => pts.map((p, i) => ({ ...p, line: median(pts.slice(Math.max(0, i - n + 1), i + 1).map((x) => x.value)) }));
   const tip = (p) => `${p.tip} · ${num(p.value, 1)}${p.long ? " (long run)" : ""}`;
-  const run = vo2Summary("run"), rp = smooth(run.all).filter((p) => p.date >= from);
+  const run = vo2Summary("run"), rp = smooth(run.all, VO.smoothRun).filter((p) => p.date >= from);
   if (rp.length) chartCard(grid, "Running VO2 max", {
     type: "line", labels: rp.map((p) => short(p.date)), xName: "Run", tipLabels: rp.map(tip),
     series: [{ name: "VO2 max", color: c[0], values: rp.map((p) => p.line) }],
@@ -441,7 +451,7 @@ function vo2Charts(grid, from, short) {
   const swim = vo2Summary("swim");
   const byPool = new Map();
   swim.all.forEach((p) => { if (!byPool.has(p.pool)) byPool.set(p.pool, []); byPool.get(p.pool).push(p); });
-  let sp = [...byPool.values()].flatMap((list) => smooth(list)).filter((p) => p.date >= from).sort((x, y) => x.date.localeCompare(y.date));
+  let sp = [...byPool.values()].flatMap((list) => smooth(list, VO.smoothSwim)).filter((p) => p.date >= from).sort((x, y) => x.date.localeCompare(y.date));
   const counts = new Map(); sp.forEach((p) => counts.set(p.pool, (counts.get(p.pool) || 0) + 1));
   const kept = new Set([...counts].filter(([, n]) => n >= 3).map(([pool]) => pool));
   if (kept.size) sp = sp.filter((p) => kept.has(p.pool)); // a pool with 1-2 swims in view would only add stray dots
@@ -451,7 +461,7 @@ function vo2Charts(grid, from, short) {
       type: "line", labels: sp.map((p) => short(p.date)), xName: "Swim", tipLabels: sp.map(tip), connect: true,
       series: pools.map((pl, i) => ({ name: pl ? `${pl} m pool` : "Open water", color: c[i % 2], values: sp.map((p) => (p.pool === pl ? p.line : null)) })),
       yFmt: (v) => `${num(v, 1)}`, axisFmt: (v) => num(v), dots: sp.length < 40,
-    }, "Swim speed at a given effort, scaled to the running number. Each point is the median of your last 3 swims in that pool. Read it as up, down or flat.");
+    }, "Swim speed at a given effort, scaled to the running number. Each point is the median of your last 5 swims in that pool; drill and technique swims are left out. Read it as up, down or flat.");
   }
 }
 
