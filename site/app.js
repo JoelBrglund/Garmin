@@ -340,7 +340,7 @@ const TS = {
   over: 1.5, overStressed: 1.3,            // load ratio (this week / 4-week weekly average)
   recovery: 0.8, detrain: 0.5, peakMax: 1.05, productiveMin: 1.0,
   swimMinDist: 1500, swimMinN: 4, swimTol: 0.03,   // swim windows: last 28 days vs the 28 before
-  rhrTol: 1.5, rhrRise: 3, hrvTol: 0.05, runMin: 6, runTol: 0.02,
+  rhrTol: 1.5, rhrRise: 3, hrvTol: 0.05,
   trendCut: 0.25,                          // weighted vote needed to call a trend
   anaerobicMinTE: 2.0,                     // anaerobic training effect that counts as high-intensity work
   anaerobicWeight: 0.5,                    // anaerobic scores read high, so they count half in the load split
@@ -356,6 +356,104 @@ function judge(cur, prev, tol, { relative = true, lowerIsBetter = false } = {}) 
 }
 
 const isStrength = (a) => a.type === "strength_training";
+
+/* ---------- VO2 max ----------
+   Garmin's API has no VO2 max, so it is worked out the way Garmin does it from running: speed (grade
+   adjusted) against heart rate. Swimming can't give a true VO2 max (swim oxygen cost depends on technique),
+   so "Swim VO2 max" is a trend index: swim speed per fraction of heart-rate reserve, scaled to the running
+   number. Read it as up / down / flat. Swims are only ever compared within the same pool length. */
+
+const VO = {
+  runMinSec: 600, runMinDist: 1000, runMinSpeed: 1.5, hrrLo: 0.55, hrrHi: 0.95,
+  longRunMin: 40,             // longer runs drift in heart rate; they only count when there are too few others
+  runOffset: -2.0,            // fitted to the watch's value (56-57)
+  swimMinDist: 1500, swimHrMax: 181, swimHrrLo: 0.45, swimHrrHi: 0.95,
+  swimScale: 34.3,            // makes a typical recent swim read about the same as the running value
+  currentDays: 42, minN: 2, tol: 0.02,
+};
+
+// One value per eligible run / swim, oldest first.
+function vo2Points(kind) {
+  const rhr = new Map(DATA.days.map((d) => [d.date, d.rhr]));
+  const zone = (DATA.hrZones || []).find((z) => z.sport === "RUNNING") || (DATA.hrZones || [])[0] || {};
+  const runMax = zone.maxHeartRateUsed || 194, zoneRest = zone.restingHeartRateUsed || 48;
+  const out = [];
+  DATA.activities.forEach((a) => {
+    if (!a.averageHR) return;
+    const rest = rhr.get(actDate(a)) ?? zoneRest;
+    if (kind === "run" && isRealRun(a)) {
+      const v = a.avgGradeAdjustedSpeed || a.averageSpeed, hrr = (a.averageHR - rest) / (runMax - rest);
+      if (!(a.duration >= VO.runMinSec) || a.distance < VO.runMinDist || !(v >= VO.runMinSpeed) || hrr < VO.hrrLo || hrr > VO.hrrHi) return;
+      out.push({ date: actDate(a), value: (12 * v) / hrr + 3.5 + VO.runOffset, long: a.duration > VO.longRunMin * 60, pool: 0,
+        tip: `${fmtDay(actDate(a))} · ${dist(a.distance, 1)} · ${pace(a.averageSpeed)} ${paceUnit()} · ${num(a.averageHR)} bpm` });
+    } else if (kind === "swim" && isSwim(a)) {
+      const secs = a.movingDuration || a.duration, hrr = (a.averageHR - rest) / (VO.swimHrMax - rest);
+      if (!(secs > 0) || a.distance < VO.swimMinDist || hrr < VO.swimHrrLo || hrr > VO.swimHrrHi) return;
+      const pool = a.poolLength > 0 ? Math.round(a.poolLength / 100) : 0;
+      out.push({ date: actDate(a), value: (VO.swimScale * (a.distance / secs)) / hrr, long: false, pool,
+        tip: `${fmtDay(actDate(a))} · ${dist(a.distance)} · ${pool ? pool + " m pool" : "open water"}` });
+    }
+  });
+  return out.sort((x, y) => x.date.localeCompare(y.date));
+}
+
+// Current value (median of the last 6 weeks) and trend (last 4 weeks vs the 4 before).
+function vo2Summary(kind, day = DATA.days[DATA.days.length - 1].date) {
+  const age = (p) => (dayDate(day) - dayDate(p.date)) / 86400000;
+  const all = vo2Points(kind).filter((p) => age(p) >= 0);
+  let pts = all, pool = null;
+  if (kind === "swim" && all.length) { pool = all[all.length - 1].pool; pts = all.filter((p) => p.pool === pool); } // like with like
+  const pick = (lo, hi) => { const w = pts.filter((p) => age(p) >= lo && age(p) < hi), steady = w.filter((p) => !p.long); return steady.length >= VO.minN ? steady : w; };
+  const res = { kind, all, pts, pool, value: null, date: null, stale: false, trend: null };
+  const cur = pick(0, VO.currentDays);
+  if (cur.length >= VO.minN) { res.value = median(cur.map((p) => p.value)); res.date = cur[cur.length - 1].date; }
+  else if (pts.length) { res.value = pts[pts.length - 1].value; res.date = pts[pts.length - 1].date; res.stale = true; }
+  const c = pick(0, 28), pr = pick(28, 56);
+  if (c.length >= VO.minN && pr.length >= VO.minN) {
+    const now = median(c.map((p) => p.value)), before = median(pr.map((p) => p.value));
+    res.trend = { now, before, diff: now - before, verdict: judge(now, before, VO.tol) };
+  }
+  return res;
+}
+
+function vo2Tiles(view) {
+  const run = vo2Summary("run"), swim = vo2Summary("swim");
+  if (!run.value && !swim.value) return;
+  const sub = (s, extra = "") => {
+    const t = s.trend, arrow = !t ? "" : t.verdict === "up" ? "↑" : t.verdict === "down" ? "↓" : "→";
+    return (t ? `${arrow} ${t.diff > 0 ? "+" : ""}${num(t.diff, 1)} vs previous 4 weeks` : "No trend yet") + (s.stale ? `<br>as of ${esc(fmtDay(s.date))}` : "") + extra;
+  };
+  const tl = (label, s, extra) => tile(label, s.value ? `${num(s.value)}<small> ml/kg/min</small>` : "–", s.value ? sub(s, extra) : "Not enough data yet");
+  section(view, [tl("VO2 max · running", run), tl("VO2 max · swimming", swim, swim.pool ? ` · ${swim.pool} m pool` : "")].join(""), "tiles");
+}
+
+function vo2Charts(grid, from, short) {
+  const c = [css("--s1"), css("--s2")];
+  // Single sessions swing a lot, so the line is the median of the last 3 sessions (same pool for swims); hover shows the single value.
+  const smooth = (pts) => pts.map((p, i) => ({ ...p, line: median(pts.slice(Math.max(0, i - 2), i + 1).map((x) => x.value)) }));
+  const tip = (p) => `${p.tip} · ${num(p.value, 1)}${p.long ? " (long run)" : ""}`;
+  const run = vo2Summary("run"), rp = smooth(run.all).filter((p) => p.date >= from);
+  if (rp.length) chartCard(grid, "Running VO2 max", {
+    type: "line", labels: rp.map((p) => short(p.date)), xName: "Run", tipLabels: rp.map(tip),
+    series: [{ name: "VO2 max", color: c[0], values: rp.map((p) => p.line) }],
+    yFmt: (v) => `${num(v, 1)} ml/kg/min`, axisFmt: (v) => num(v), dots: rp.length < 40,
+  }, "Worked out from your running pace and heart rate, the way Garmin does. Each point is the median of your last 3 runs. Going up = fitter.");
+  const swim = vo2Summary("swim");
+  const byPool = new Map();
+  swim.all.forEach((p) => { if (!byPool.has(p.pool)) byPool.set(p.pool, []); byPool.get(p.pool).push(p); });
+  let sp = [...byPool.values()].flatMap((list) => smooth(list)).filter((p) => p.date >= from).sort((x, y) => x.date.localeCompare(y.date));
+  const counts = new Map(); sp.forEach((p) => counts.set(p.pool, (counts.get(p.pool) || 0) + 1));
+  const kept = new Set([...counts].filter(([, n]) => n >= 3).map(([pool]) => pool));
+  if (kept.size) sp = sp.filter((p) => kept.has(p.pool)); // a pool with 1-2 swims in view would only add stray dots
+  if (sp.length) {
+    const pools = [...new Set(sp.map((p) => p.pool))].sort((x, y) => y - x);
+    chartCard(grid, "Swim VO2 max", {
+      type: "line", labels: sp.map((p) => short(p.date)), xName: "Swim", tipLabels: sp.map(tip), connect: true,
+      series: pools.map((pl, i) => ({ name: pl ? `${pl} m pool` : "Open water", color: c[i % 2], values: sp.map((p) => (p.pool === pl ? p.line : null)) })),
+      yFmt: (v) => `${num(v, 1)}`, axisFmt: (v) => num(v), dots: sp.length < 40,
+    }, "Swim speed at a given effort, scaled to the running number. Each point is the median of your last 3 swims in that pool. Read it as up, down or flat.");
+  }
+}
 
 // Splits 28 days of training load into low aerobic, high aerobic and anaerobic.
 function loadFocus(day) {
@@ -397,9 +495,9 @@ function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
   };
   const add = (key, label, weight, verdict, detail) => res.signals.push({ key, label, weight, verdict, detail });
 
-  const eff = swimWin((a) => a.distance / ((a.movingDuration || a.duration) / 60) / a.averageHR);
-  if (eff) add("swimEff", "Swim efficiency", 2, judge(eff[0], eff[1], TS.swimTol),
-    `${num(eff[0], 3)} now vs ${num(eff[1], 3)} before (metres per minute per heartbeat)`);
+  const sv = vo2Summary("swim", day);
+  if (sv.trend) add("swimVo2", "Swim VO2 max", 2, sv.trend.verdict,
+    `${num(sv.trend.now, 1)} now vs ${num(sv.trend.before, 1)} before${sv.pool ? ` (${sv.pool} m pool)` : ""}`);
   // SWOLF depends on pool length (50 m pools read about double 25 m pools), so scale it to a 25 m pool.
   const sw = swimWin((a) => a.averageSwolf > 0 && a.poolLength > 0 ? a.averageSwolf / (a.poolLength / 100 / 25) : null);
   if (sw) add("swolf", "SWOLF (per 25 m)", 1, judge(sw[0], sw[1], TS.swimTol, { lowerIsBetter: true }),
@@ -421,13 +519,8 @@ function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
     add("hrv", "HRV", 1, v, `${num(hrvNow)} ms (7-day) vs ${num(hrvPrev)} before${hrvLow ? " · below your normal range" : ""}`);
   }
 
-  const runs = inWin(acts.filter((a) => isRealRun(a) && a.averageHR && a.averageSpeed), actDate, 0, 56)
-    .sort((a, b) => actDate(a).localeCompare(actDate(b)));
-  if (runs.length >= TS.runMin) {
-    const e = (a) => (a.averageSpeed * 60) / a.averageHR;
-    const cur = median(runs.slice(-3).map(e)), prev = median(runs.slice(-9, -3).map(e));
-    add("runEff", "Running efficiency", 1, judge(cur, prev, TS.runTol), `${num(cur, 2)} now vs ${num(prev, 2)} before (metres per heartbeat)`);
-  }
+  const rv = vo2Summary("run", day);
+  if (rv.trend) add("runVo2", "Running VO2 max", 1, rv.trend.verdict, `${num(rv.trend.now, 1)} now vs ${num(rv.trend.before, 1)} before`);
 
   // Weighted vote: improving +weight, declining -weight.
   if (res.signals.length >= 2) {
@@ -866,7 +959,7 @@ function statusDetail(view) {
   const sigRows = ts.signals.length
     ? rows(ts.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`]))
     : `<p class="empty">Not enough data yet.</p>`;
-  const swimSig = ts.signals.some((s) => s.key === "swimEff");
+  const swimSig = ts.signals.some((s) => s.key === "swimVo2");
   section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Swim · run · walk</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
@@ -876,13 +969,13 @@ function statusDetail(view) {
     </div>
     <details><summary>Show fitness signals</summary>
       ${sigRows}
-      ${swimSig ? "" : `<p class="note">Swim signals need at least ${TS.swimMinN} swims of ${dist(TS.swimMinDist)}+ in each of the last two 4-week periods.</p>`}
+      ${swimSig ? "" : `<p class="note">Swim VO2 max needs at least ${VO.minN} swims of ${dist(VO.swimMinDist)}+ in the same pool in each of the last two 4-week periods.</p>`}
     </details>
     <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
     <details><summary>How this is calculated</summary>
       <p class="note">Covers cardio only (swimming, running, walking); lifting is judged separately so one can't hide the other.</p>
       <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
-      <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim efficiency (metres per minute per heartbeat, swims over ${dist(TS.swimMinDist)}) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and, when you have enough runs, running efficiency. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
+      <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim VO2 max (swim speed per fraction of heart-rate reserve, swims over ${dist(VO.swimMinDist)}, same pool only) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and running VO2 max. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
       <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight).</p>
     </details>`);
 }
@@ -1437,6 +1530,7 @@ function renderTrends(view) {
   const [c1, c2] = [css("--s1"), css("--s2")];
   const short = (s) => fmtDay(s, { day: "numeric", month: "short" });
   const avgNote = (v, f) => `<span class="muted small">avg ${nz(v) ? f(v) : "–"}</span>`;
+  vo2Tiles(view);
   const grid = section(view, "", "grid2");
 
   // Recovery markers
@@ -1452,14 +1546,8 @@ function renderTrends(view) {
     band: { lo: days.map((d) => d.hrv?.low), hi: days.map((d) => d.hrv?.high) },
   }, "Shaded area = your normal range. A rising 7-day average means you're handling training well.");
 
-  // Running fitness: distance covered per heartbeat
-  const runs = DATA.activities.filter((a) => isRealRun(a) && a.averageHR && a.averageSpeed && actDate(a) >= from).reverse();
-  if (runs.length) chartCard(grid, "Running efficiency", {
-    type: "line", labels: runs.map((a) => short(actDate(a))), xName: "Run",
-    tipLabels: runs.map((a) => `${fmtDay(actDate(a))} · ${dist(a.distance, 1)} · ${pace(a.averageSpeed)} ${paceUnit()} · ${num(a.averageHR)} bpm`),
-    series: [{ name: "Metres per heartbeat", color: c1, values: runs.map((a) => (a.averageSpeed * 60) / a.averageHR) }],
-    yFmt: (v) => `${num(v, 2)} m per beat`, axisFmt: (v) => v.toFixed(2), dots: runs.length < 40,
-  }, "How far you run per heartbeat. Going up = faster at the same effort, the clearest sign your running fitness is improving.");
+  // VO2 max (running, and a swim trend index)
+  vo2Charts(grid, from, short);
 
   // Swimming: pace and efficiency
   const swims = DATA.activities.filter((a) => isSwim(a) && a.averageSpeed && actDate(a) >= from).reverse();
