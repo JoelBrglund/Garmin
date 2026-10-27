@@ -338,13 +338,15 @@ function judge(cur, prev, tol, { relative = true, lowerIsBetter = false } = {}) 
   return better > tol ? "up" : better < -tol ? "down" : "flat";
 }
 
+const isStrength = (a) => a.type === "strength_training";
+
 // Splits 28 days of training load into low aerobic, high aerobic and anaerobic.
 function loadFocus(day) {
   const out = { low: 0, high: 0, an: 0 };
   DATA.activities.forEach((a) => {
     const age = (dayDate(day) - dayDate(actDate(a))) / 86400000;
     const L = a.activityTrainingLoad;
-    if (age < 0 || age >= 28 || !nz(L)) return;
+    if (isStrength(a) || age < 0 || age >= 28 || !nz(L)) return;
     const ae = a.aerobicTrainingEffect || 0, an = a.anaerobicTrainingEffect || 0;
     const anShare = an >= TS.anaerobicMinTE && ae + an > 0 ? (TS.anaerobicWeight * an) / (ae + an) : 0;
     const z = [1, 2, 3, 4, 5].map((i) => a[`hrTimeInZone_${i}`] || 0), zt = z.reduce((x, y) => x + y, 0);
@@ -358,7 +360,8 @@ function loadFocus(day) {
 
 function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
   const age = (d) => (dayDate(day) - dayDate(d)) / 86400000;
-  const acts = DATA.activities.filter((a) => age(actDate(a)) >= 0);
+  // Aerobic status looks at cardio only (swim, run, walk, bike); lifting has its own gauges.
+  const acts = DATA.activities.filter((a) => age(actDate(a)) >= 0 && !isStrength(a));
   const inWin = (list, get, lo, hi) => list.filter((x) => { const g = age(get(x)); return g >= lo && g < hi; });
   const loadSum = (lo, hi) => inWin(acts, actDate, lo, hi).reduce((s, a) => s + (a.activityTrainingLoad || 0), 0);
   const days = DATA.days.filter((d) => age(d.date) >= 0);
@@ -441,6 +444,81 @@ function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
   return res;
 }
 
+
+/* ---------- Readiness (0-100) ----------
+   How ready you are to train hard today: recovery markers (HRV, sleep, resting HR) plus how much
+   recent training (cardio and lifting) is still weighing on you. Garmin's own Training Readiness
+   isn't in the API, so this is an estimate. Weights and cut-offs are in RD. */
+
+const RD = {
+  weights: { hrv: 0.30, sleep: 0.25, rhr: 0.15, load: 0.30 },
+  minParts: 3,
+  baselineDays: 42, nights: 3,
+  halfLifeDays: 1.4,         // how fast a workout's fatigue fades
+  steadyLoad: 2.54,          // decayed load of steady daily training, in days of average load
+  labels: [[85, "Prime", "good"], [70, "Good", "good"], [55, "Moderate", ""], [40, "Low", "warning"], [0, "Poor", "critical"]],
+};
+const clamp100 = (x) => Math.max(0, Math.min(100, x));
+const sdOf = (vals) => { const v = vals.filter(nz); if (v.length < 4) return null; const m = avg(v); return Math.sqrt(avg(v.map((x) => (x - m) ** 2))); };
+
+// Training load counted toward fatigue. (Later: lifting from Hevy replaces Garmin's low strength numbers.)
+const effLoad = (a) => a.activityTrainingLoad || 0;
+
+function readiness(day = DATA.days[DATA.days.length - 1].date) {
+  const days = DATA.days.filter((d) => d.date <= day).reverse(); // newest first
+  const cur = days[0];
+  const parts = [];
+  const add = (key, label, score, detail) => parts.push({ key, label, score: Math.round(clamp100(score)), detail });
+  const prior = (pick) => days.slice(1, 1 + RD.baselineDays).map(pick);
+
+  const hrvs = days.slice(0, RD.nights).map((d) => d.hrv?.avg).filter(nz);
+  const hrvBase = prior((d) => d.hrv?.avg).filter(nz);
+  if (hrvs.length >= 2 && hrvBase.length >= 14) {
+    const b = avg(hrvBase), sd = Math.max(sdOf(hrvBase) || 0, b * 0.05), now = avg(hrvs);
+    add("hrv", "HRV", 70 + ((now - b) / sd) * 20, `${num(now)} ms (3-night avg) vs ${num(b)} usual`);
+  }
+  const sl = days.slice(0, RD.nights).map((d) => d.sleep?.score).filter(nz);
+  if (sl.length >= 2) add("sleep", "Sleep", avg(sl), `Sleep score ${num(avg(sl))} over the last ${sl.length} nights`);
+  const rhrBase = prior((d) => d.rhr).filter(nz);
+  if (nz(cur?.rhr) && rhrBase.length >= 14) {
+    const b = avg(rhrBase), sd = Math.max(sdOf(rhrBase) || 0, 1);
+    add("rhr", "Resting heart rate", 75 - ((cur.rhr - b) / sd) * 20, `${num(cur.rhr)} bpm vs ${num(b, 1)} usual`);
+  }
+  // Fatigue: workout loads fade with a half-life, compared with what your normal days look like.
+  const ageOf = (a) => (dayDate(day) - dayDate(actDate(a))) / 86400000;
+  const acts = DATA.activities.filter((a) => ageOf(a) >= 0);
+  const k = Math.LN2 / RD.halfLifeDays;
+  const decayed = acts.filter((a) => ageOf(a) < 10).reduce((s, a) => s + effLoad(a) * Math.exp(-k * ageOf(a)), 0);
+  const daily = acts.filter((a) => ageOf(a) < 28).reduce((s, a) => s + effLoad(a), 0) / 28;
+  if (daily > 0 && days.length >= 14) {
+    const fr = decayed / (daily * RD.steadyLoad);
+    add("load", "Recent training", 100 - (fr - 0.4) * 60, fr > 1.2 ? "Heavier than usual in the last few days" : fr < 0.7 ? "Lighter than usual in the last few days" : "About your usual recent load");
+  }
+
+  const res = { day, parts, score: null, label: "No readiness", tone: "", reason: "Not enough recovery data yet." };
+  if (parts.length < RD.minParts) return res;
+  const wsum = parts.reduce((s, p) => s + RD.weights[p.key], 0);
+  res.score = Math.round(parts.reduce((s, p) => s + p.score * RD.weights[p.key], 0) / wsum);
+  const [, label, tone] = RD.labels.find(([min]) => res.score >= min);
+  Object.assign(res, { label, tone });
+  const worst = [...parts].sort((a, b) => a.score - b.score)[0];
+  const why = { hrv: "HRV is below your usual", sleep: "sleep has been short or poor", rhr: "resting heart rate is up", load: "recent training is still weighing on you" };
+  res.reason = worst.score >= 70 ? "Recovery markers and recent load all look good." : `Held back mostly because ${why[worst.key]}.`;
+  return res;
+}
+
+function readinessCard(view, day) {
+  const r = readiness(day);
+  const bars = r.parts.map((p) => `<div class="focus"><div class="focus-top"><span>${esc(p.label)}</span><span><b>${p.score}</b> <small class="muted">${esc(p.detail)}</small></span></div>${meter(p.score / 100)}</div>`).join("");
+  section(view, `<div class="card-head"><h2>Readiness</h2><span class="muted small">Estimated</span></div>
+    <div class="ready"><span class="ready-score">${r.score ?? "–"}</span><div>${statusBadge(r, true)}<p class="note" style="margin-top:2px">${esc(r.reason)}</p></div></div>
+    ${bars}
+    <details><summary>How this is calculated</summary>
+      <p class="note">A 0–100 estimate of how ready you are to train hard today. Garmin's own Training Readiness isn't available, so this blends four things: HRV (30%), sleep (25%), resting heart rate (15%) and how much recent training is still weighing on you (30%). Training load fades with a half-life of about a day and a half, and is compared with your normal daily load.</p>
+      <p class="note">Lifting currently counts through Garmin's own load, which under-counts it.</p>
+    </details>`);
+}
+
 // Rough healthy shares of 28-day load. A guide only, not Garmin's targets.
 const FOCUS_TARGETS = [
   { key: "low", label: "Low aerobic", lo: 0.4, hi: 0.7, colorVar: "--s3" },
@@ -455,7 +533,7 @@ function statusBadge(ts, big = false) {
 // Small card for the Today tab.
 function statusCard(view, day) {
   const ts = trainingStatus(day);
-  section(view, `<div class="card-head"><h2>Training status</h2><span class="muted small">Estimated</span></div>
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Estimated · swim, run, walk</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>`);
 }
 
@@ -474,7 +552,7 @@ function statusDetail(view) {
     ? rows(ts.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`]))
     : `<p class="empty">Not enough data yet.</p>`;
   const swimSig = ts.signals.some((s) => s.key === "swimEff");
-  section(view, `<div class="card-head"><h2>Training status</h2><span class="muted small">Estimated – not Garmin's number</span></div>
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Estimated – not Garmin's number</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(ts.load7), "last 7 days")}
@@ -486,7 +564,7 @@ function statusDetail(view) {
     ${swimSig ? "" : `<p class="note">Swim signals need at least ${TS.swimMinN} swims of ${dist(TS.swimMinDist)}+ in each of the last two 4-week periods.</p>`}
     <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
     <details><summary>How this is calculated</summary>
-      <p class="note">Garmin doesn't share Training Status (it needs VO2 max), so this is an estimate from your data.</p>
+      <p class="note">Garmin doesn't share Training Status (it needs VO2 max), so this is an estimate from your data. It covers cardio only (swimming, running, walking); lifting is judged separately so one can't hide the other.</p>
       <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
       <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim efficiency (metres per minute per heartbeat, swims over ${dist(TS.swimMinDist)}) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and, when you have enough runs, running efficiency. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
       <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight). The ranges shown are a rough guide, not Garmin's targets.</p>
@@ -899,6 +977,7 @@ function renderToday(view) {
       sl && nz(sl.respAvg) ? vsBaseline(sl.respAvg, baseline((x) => x.sleep?.respAvg, state.day), "brpm") : ""),
   ].join(""), "tiles");
 
+  readinessCard(view, state.day);
   statusCard(view, state.day);
 
   const last14 = DATA.days.filter((x) => x.date <= state.day).slice(-14);

@@ -162,6 +162,8 @@ svg { display: block; }
 .status.serious { --dot: var(--serious); } .status.critical { --dot: var(--critical); }
 .status.ts-big { font-size: 20px; }
 .status.ts-big::before { width: 12px; height: 12px; }
+.ready { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.ready-score { font-size: 52px; font-weight: 600; line-height: 1; min-width: 70px; }
 .focus { margin-top: 8px; }
 .focus-top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 14px; }
 .focus .meter { margin-top: 4px; }
