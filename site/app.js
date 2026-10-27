@@ -12,7 +12,7 @@ const store = {
 
 let DATA = null;
 let PASS = null; // passphrase of the unlocked session, kept in memory for refreshing
-const state = { tab: "today", day: null, night: null, range: 30, actType: "all" };
+const state = { tab: "today", day: null, night: null, range: 30, actType: "all", lift: null };
 
 /* ---------- Unlocking ---------- */
 
@@ -45,6 +45,7 @@ async function unlock(passphrase, remember) {
   PASS = passphrase;
   lastCheck = Date.now();
   if (remember) store.set(PASS_KEY, passphrase);
+  await loadDemoScript();
   prepare();
   $("#lock").hidden = true;
   $("#app").hidden = false;
@@ -94,7 +95,7 @@ function setStatus(text, kind = "", clearAfter = 0) {
 async function reloadData() {
   const fresh = await decrypt(await loadBlob(), PASS);
   lastCheck = Date.now();
-  if (fresh.generatedAt === DATA.generatedAt) { DATA = fresh; showUpdated(); return false; }
+  if (fresh.generatedAt === DATA.generatedAt) { showUpdated(); return false; } // nothing new: keep the data (and its Hevy links) as is
   DATA = fresh; prepare(); render();
   return true;
 }
@@ -173,7 +174,23 @@ document.addEventListener("visibilitychange", () => {
 /* ---------- Data helpers ---------- */
 
 const byDate = new Map();
+// Preview of the Strength features with made-up lifts, for when Hevy isn't connected (open the site with #demo-hevy).
+function loadDemoScript() {
+  return new Promise((done) => {
+    if (location.hash !== "#demo-hevy" || window.makeDemoHevy) return done();
+    const el = document.createElement("script");
+    el.src = "demo-hevy.js"; el.onload = el.onerror = () => done();
+    document.head.appendChild(el);
+  });
+}
+function applyDemo() {
+  if (location.hash === "#demo-hevy" && !DATA.hevy && window.makeDemoHevy) { DATA.hevy = window.makeDemoHevy(DATA); DATA.demo = true; }
+}
+
 function prepare() {
+  applyDemo();
+  linkHevy();
+  $("[data-tab=strength]").hidden = !DATA.hevy;
   byDate.clear();
   DATA.days.forEach((d) => byDate.set(d.date, d));
   const todayStr = localToday();
@@ -461,8 +478,8 @@ const RD = {
 const clamp100 = (x) => Math.max(0, Math.min(100, x));
 const sdOf = (vals) => { const v = vals.filter(nz); if (v.length < 4) return null; const m = avg(v); return Math.sqrt(avg(v.map((x) => (x - m) ** 2))); };
 
-// Training load counted toward fatigue. (Later: lifting from Hevy replaces Garmin's low strength numbers.)
-const effLoad = (a) => a.activityTrainingLoad || 0;
+// Training load counted toward fatigue. Lifting uses the Hevy-based gym load when available (Garmin under-counts it).
+const effLoad = (a) => (a.hevy ? Math.max(a.activityTrainingLoad || 0, hevyLoad(a.hevy)) : a.activityTrainingLoad || 0);
 
 function readiness(day = DATA.days[DATA.days.length - 1].date) {
   const days = DATA.days.filter((d) => d.date <= day).reverse(); // newest first
@@ -485,11 +502,11 @@ function readiness(day = DATA.days[DATA.days.length - 1].date) {
     add("rhr", "Resting heart rate", 75 - ((cur.rhr - b) / sd) * 20, `${num(cur.rhr)} bpm vs ${num(b, 1)} usual`);
   }
   // Fatigue: workout loads fade with a half-life, compared with what your normal days look like.
-  const ageOf = (a) => (dayDate(day) - dayDate(actDate(a))) / 86400000;
-  const acts = DATA.activities.filter((a) => ageOf(a) >= 0);
+  const ageOf = (e) => (dayDate(day) - dayDate(e.date)) / 86400000;
+  const acts = loadEvents().filter((e) => ageOf(e) >= 0);
   const k = Math.LN2 / RD.halfLifeDays;
-  const decayed = acts.filter((a) => ageOf(a) < 10).reduce((s, a) => s + effLoad(a) * Math.exp(-k * ageOf(a)), 0);
-  const daily = acts.filter((a) => ageOf(a) < 28).reduce((s, a) => s + effLoad(a), 0) / 28;
+  const decayed = acts.filter((e) => ageOf(e) < 10).reduce((s, e) => s + e.load * Math.exp(-k * ageOf(e)), 0);
+  const daily = acts.filter((e) => ageOf(e) < 28).reduce((s, e) => s + e.load, 0) / 28;
   if (daily > 0 && days.length >= 14) {
     const fr = decayed / (daily * RD.steadyLoad);
     add("load", "Recent training", 100 - (fr - 0.4) * 60, fr > 1.2 ? "Heavier than usual in the last few days" : fr < 0.7 ? "Lighter than usual in the last few days" : "About your usual recent load");
@@ -513,10 +530,306 @@ function readinessCard(view, day) {
   section(view, `<div class="card-head"><h2>Readiness</h2><span class="muted small">Estimated</span></div>
     <div class="ready"><span class="ready-score">${r.score ?? "–"}</span><div>${statusBadge(r, true)}<p class="note" style="margin-top:2px">${esc(r.reason)}</p></div></div>
     ${bars}
+    ${DATA.hevy ? `<h3 style="margin-top:12px">Muscle freshness</h3>${rows(freshness(day).map((f) => [f.label, `<span class="status ${f.fresh ? "good" : "warning"}">${f.fresh ? "Fresh" : "Recovering"}</span> <span class="muted small">${f.text}</span>`]))}` : ""}
     <details><summary>How this is calculated</summary>
       <p class="note">A 0–100 estimate of how ready you are to train hard today. Garmin's own Training Readiness isn't available, so this blends four things: HRV (30%), sleep (25%), resting heart rate (15%) and how much recent training is still weighing on you (30%). Training load fades with a half-life of about a day and a half, and is compared with your normal daily load.</p>
-      <p class="note">Lifting currently counts through Garmin's own load, which under-counts it.</p>
+      <p class="note">${DATA.hevy ? `Lifting counts through an estimated gym load from Hevy (hard sets × ${HV.loadPerSet}), because Garmin under-counts it. Muscle freshness shows which muscle groups had a hard session in the last ${HV.freshDays} days.` : "Lifting currently counts through Garmin's own load, which under-counts it."}</p>
     </details>`);
+}
+
+
+/* ---------- Strength (Hevy) ----------
+   Garmin records lifting as "1 set, 0 reps", so exercises, sets and weights come from Hevy
+   (data.hevy, added by fetch/fetch_hevy.py). Everything here is hidden when there is no Hevy data.
+   Gym load is an estimate: hard sets x HV.loadPerSet (Garmin under-counts lifting). */
+
+const HV = {
+  loadPerSet: 4,                 // gym load per hard set (a 20-set session ~ 80, a hard swim ~ 150)
+  hardTypes: ["normal", "failure", "dropset"],
+  e1rmMaxReps: 12,               // 1-rep-max estimates are only trusted up to this many reps
+  matchSlackMin: 45,             // Hevy and Garmin sessions match if they overlap within this many minutes
+  trendTol: 0.02,                // a lift counts as up/down when its best estimated 1RM moves by 2%
+  minLifts: 3, minSessions: 2,   // lifts needed for a trend; sessions per 4-week window per lift
+  volumeTol: 0.10,
+  freshHeavySets: 4,             // sets in a muscle group that make it "worked hard"
+  freshDays: 2,                  // days until a worked muscle group counts as fresh again
+  pairMinN: 8,                   // sessions per group before the strength-vs-swim comparison is shown
+};
+// Gym status thresholds (same shape as TS). `over` is higher than for cardio: weekly lifting load is lumpier (3 sessions one week, 2 the next).
+const GS = {
+  minDays: 28, minSessions: 6, over: 2.0, overStressed: 1.3, recovery: 0.8, detrain: 0.5, peakMax: 1.05, productiveMin: 1.0, trendCut: 0.25,
+};
+const MUSCLE_GROUP = { chest: "push", shoulders: "push", triceps: "push", lats: "pull", upper_back: "pull", traps: "pull", biceps: "pull", forearms: "pull",
+  quadriceps: "legs", hamstrings: "legs", glutes: "legs", calves: "legs", abductors: "legs", adductors: "legs", abdominals: "core", lower_back: "core" };
+const GROUPS = [["push", "Push", "--s1"], ["pull", "Pull", "--s3"], ["legs", "Legs", "--s2"], ["core", "Core", "--s4"]];
+
+const hevyMs = (iso) => Date.parse(iso);
+const hevyDate = (w) => new Intl.DateTimeFormat("en-CA", { timeZone: DATA.timezone }).format(new Date(hevyMs(w.start)));
+const isHard = (s) => HV.hardTypes.includes(s.type || "normal") && (s.reps > 0 || s.kg > 0);
+const hardSets = (ex) => (ex.sets || []).filter(isHard);
+const setE1rm = (s) => (s.kg > 0 && s.reps > 0 && s.reps <= HV.e1rmMaxReps ? s.kg * (1 + s.reps / 30) : null);
+const hevyStats = (w) => {
+  let sets = 0, volume = 0, exercises = 0;
+  w.exercises.forEach((ex) => { const h = hardSets(ex); if (h.length) exercises++; sets += h.length; volume += h.reduce((v, s) => v + (s.kg || 0) * (s.reps || 0), 0); });
+  return { sets, volume, exercises };
+};
+const hevyLoad = (w) => hevyStats(w).sets * HV.loadPerSet;
+const lift = (kg) => !nz(kg) ? "–" : metric() ? `${num(kg, kg % 1 ? 1 : 0)} kg` : `${num(kg * 2.20462, 0)} lb`;
+const volText = (kg) => metric() ? `${num(kg / 1000, 1)} t` : `${num(kg * 2.20462)} lb`;
+const exName = (ex) => DATA.hevy?.templates?.[ex.templateId]?.title || ex.title || "Exercise";
+
+// Weighted hard sets per muscle (primary 1, secondary 0.5).
+function muscleSets(w) {
+  const out = {};
+  w.exercises.forEach((ex) => {
+    const n = hardSets(ex).length, t = DATA.hevy.templates?.[ex.templateId];
+    if (!n || !t) return;
+    if (t.primary) out[t.primary] = (out[t.primary] || 0) + n;
+    (t.secondary || []).forEach((m) => { out[m] = (out[m] || 0) + n * 0.5; });
+  });
+  return out;
+}
+const groupSets = (w) => {
+  const g = { push: 0, pull: 0, legs: 0, core: 0 };
+  Object.entries(muscleSets(w)).forEach(([m, v]) => { if (MUSCLE_GROUP[m]) g[MUSCLE_GROUP[m]] += v; });
+  return g;
+};
+
+// Pairs each Hevy workout with the Garmin strength session it overlaps (by time).
+function linkHevy() {
+  DATA.activities.forEach((a) => { delete a.hevy; });
+  if (!DATA.hevy) return;
+  const used = new Set();
+  DATA.hevy.workouts.forEach((w) => { w.matched = false; });
+  DATA.activities.filter(isStrength).forEach((a) => {
+    const s = a.beginTimestamp || Date.parse(`${String(a.startTimeGMT).replace(" ", "T")}Z`), e = s + (a.duration || 0) * 1000, slack = HV.matchSlackMin * 60000;
+    let best = null, bestOv = 0;
+    DATA.hevy.workouts.forEach((w) => {
+      if (used.has(w.id)) return;
+      const ov = Math.min(e + slack, hevyMs(w.end)) - Math.max(s - slack, hevyMs(w.start));
+      if (ov > bestOv) { best = w; bestOv = ov; }
+    });
+    if (best) { used.add(best.id); a.hevy = best; best.matched = true; }
+  });
+}
+
+// Everything that counts as lifting: Garmin strength sessions plus Hevy workouts the watch missed.
+function strengthEvents() {
+  const ev = DATA.activities.filter(isStrength).map((a) => ({ date: actDate(a), load: effLoad(a), a, w: a.hevy || null }));
+  (DATA.hevy?.workouts || []).filter((w) => !w.matched).forEach((w) => ev.push({ date: hevyDate(w), load: hevyLoad(w), a: null, w }));
+  return ev.sort((x, y) => x.date.localeCompare(y.date));
+}
+// Everything that adds fatigue: cardio at Garmin's load, lifting at the fairer gym load.
+const loadEvents = () => DATA.activities.filter((a) => !isStrength(a)).map((a) => ({ date: actDate(a), load: effLoad(a) })).concat(strengthEvents().map((e) => ({ date: e.date, load: e.load })));
+
+// Best estimated 1RM (and heaviest set) per lift per session, oldest first.
+function liftHistory() {
+  const map = new Map();
+  [...DATA.hevy.workouts].sort((a, b) => a.start.localeCompare(b.start)).forEach((w) => {
+    w.exercises.forEach((ex) => {
+      const key = ex.templateId || ex.title;
+      let best = null, top = null;
+      hardSets(ex).forEach((s) => {
+        const e = setE1rm(s);
+        if (e && (!best || e > best.e1rm)) best = { e1rm: e, kg: s.kg, reps: s.reps };
+        if (s.kg > 0 && (!top || s.kg > top.kg)) top = { kg: s.kg, reps: s.reps };
+      });
+      if (!best) return;
+      if (!map.has(key)) map.set(key, { key, name: exName(ex), points: [] });
+      map.get(key).points.push({ date: hevyDate(w), e1rm: best.e1rm, kg: best.kg, reps: best.reps, top });
+    });
+  });
+  return [...map.values()];
+}
+
+// Personal records: a session whose estimated 1RM beat everything before it.
+function recentPRs(n = 8) {
+  const out = [];
+  liftHistory().forEach((l) => {
+    let max = 0;
+    l.points.forEach((p, i) => { if (i > 0 && p.e1rm > max * 1.0001) out.push({ name: l.name, ...p }); max = Math.max(max, p.e1rm); });
+  });
+  return out.sort((a, b) => b.date.localeCompare(a.date)).slice(0, n);
+}
+
+// Muscle groups worked hard recently: "fresh" again after HV.freshDays.
+function freshness(day) {
+  const last = {};
+  (DATA.hevy?.workouts || []).forEach((w) => {
+    const d = hevyDate(w);
+    if (d > day) return;
+    const g = groupSets(w);
+    GROUPS.forEach(([k]) => { if (g[k] >= HV.freshHeavySets && (!last[k] || d > last[k])) last[k] = d; });
+  });
+  return GROUPS.map(([k, label]) => {
+    const days = last[k] ? (dayDate(day) - dayDate(last[k])) / 86400000 : null;
+    const fresh = days === null || days >= HV.freshDays;
+    return { key: k, label, days, fresh, text: days === null ? "not trained recently" : days === 0 ? "worked hard today" : `worked hard ${num(days)} day${days === 1 ? "" : "s"} ago` };
+  });
+}
+
+function gymStatus(day = DATA.days[DATA.days.length - 1].date) {
+  const age = (d) => (dayDate(day) - dayDate(d)) / 86400000;
+  const res = { day, signals: [], trend: null, ratio: null, load7: 0, chronic: 0, sessions: 0 };
+  const set = (key, label, tone, reason) => Object.assign(res, { key, label, tone, reason });
+  if (!DATA.hevy) { set("none", "Needs Hevy", "", "Garmin doesn't record exercises, sets or weights. Connect Hevy to track your lifting."); return res; }
+
+  const ev = strengthEvents().filter((e) => age(e.date) >= 0);
+  const inWin = (list, get, lo, hi) => list.filter((x) => { const g = age(get(x)); return g >= lo && g < hi; });
+  const loadSum = (lo, hi) => inWin(ev, (e) => e.date, lo, hi).reduce((s, e) => s + e.load, 0);
+  res.load7 = loadSum(0, 7); res.chronic = loadSum(0, 28) / 4;
+  res.ratio = res.chronic > 0 ? res.load7 / res.chronic : null;
+  const prevRatio = res.chronic > 0 ? loadSum(7, 14) / res.chronic : null;
+  res.sessions = inWin(ev, (e) => e.date, 0, 28).length;
+  const firstDate = DATA.hevy.workouts.map(hevyDate).sort()[0];
+  const spanDays = firstDate ? age(firstDate) : 0;
+
+  // Lifts: best estimated 1RM, last 28 days vs the 28 before.
+  const hist = liftHistory().map((l) => ({ ...l, points: l.points.filter((p) => age(p.date) >= 0) }));
+  const changes = [];
+  hist.forEach((l) => {
+    const cur = inWin(l.points, (p) => p.date, 0, 28), prev = inWin(l.points, (p) => p.date, 28, 56);
+    if (cur.length >= HV.minSessions && prev.length >= HV.minSessions)
+      changes.push({ name: l.name, cur: Math.max(...cur.map((p) => p.e1rm)), prev: Math.max(...prev.map((p) => p.e1rm)) });
+  });
+  res.lifts = changes;
+  const add = (key, label, weight, verdict, detail) => res.signals.push({ key, label, weight, verdict, detail });
+  if (changes.length >= HV.minLifts) {
+    const up = changes.filter((c) => judge(c.cur, c.prev, HV.trendTol) === "up").length, down = changes.filter((c) => judge(c.cur, c.prev, HV.trendTol) === "down").length;
+    const sc = (up - down) / changes.length;
+    add("lifts", "Lift progress", 2, sc > GS.trendCut ? "up" : sc < -GS.trendCut ? "down" : "flat",
+      `${up} of ${changes.length} main lifts up, ${down} down (best estimated 1RM, last 4 weeks vs the 4 before)`);
+  }
+  const setsIn = (lo, hi) => inWin(ev, (e) => e.date, lo, hi).reduce((s, e) => s + (e.w ? hevyStats(e.w).sets : 0), 0);
+  const s1 = setsIn(0, 28), s0 = setsIn(28, 56);
+  if (s0 > 0) add("volume", "Weekly hard sets", 1, judge(s1, s0, HV.volumeTol), `${num(s1 / 4, 1)} per week now vs ${num(s0 / 4, 1)} before`);
+  if (res.signals.length >= 2 || (res.signals.length === 1 && res.signals[0].key === "lifts")) {
+    const W = res.signals.reduce((s, x) => s + x.weight, 0);
+    const score = res.signals.reduce((s, x) => s + x.weight * (x.verdict === "up" ? 1 : x.verdict === "down" ? -1 : 0), 0) / W;
+    res.trend = score > GS.trendCut ? "up" : score < -GS.trendCut ? "down" : "flat";
+  }
+
+  const r = res.ratio, liftsDown = res.signals.some((s) => s.key === "lifts" && s.verdict === "down");
+  const trendText = { up: "your lifts are going up", down: "your lifts are slipping", flat: "your lifts are steady" }[res.trend] || "";
+  if (spanDays < GS.minDays || res.sessions < GS.minSessions || r === null)
+    set("none", "No status", "", `Needs at least ${GS.minDays} days of logged lifting and ${GS.minSessions} sessions in the last 4 weeks.`);
+  else if (r > GS.over || (r > GS.overStressed && liftsDown))
+    set("overreaching", "Overreaching", "critical", `This week's lifting load is ${num(r, 2)}× your 4-week average${liftsDown ? " and lifts are dropping" : ""}. Consider a lighter week.`);
+  else if (r < GS.detrain || (r < GS.recovery && prevRatio !== null && prevRatio < GS.recovery))
+    set("detraining", "Detraining", "warning", `Lifting has been well below your usual for a while (${num(r, 2)}× your 4-week average). Strength fades first.`);
+  else if (r < GS.recovery)
+    set("recovery", "Recovery", "", `A lighter lifting week (${num(r, 2)}× your 4-week average), good for absorbing the work.`);
+  else if (res.trend === null)
+    set("none", "No status", "", "Not enough repeated lifts yet to judge progress. Keep logging the same exercises.");
+  else if (res.trend === "down")
+    set("unproductive", "Unproductive", "warning", `Lifting load is normal (${num(r, 2)}×) but ${trendText}. Check sleep, food and recovery.`);
+  else if (res.trend === "up" && r <= GS.peakMax)
+    set("peaking", "Peaking", "good", `Lifting load is easy to moderate (${num(r, 2)}×) and ${trendText}. A good time to test strength.`);
+  else if (res.trend === "up" && r >= GS.productiveMin)
+    set("productive", "Productive", "good", `Lifting load is solid (${num(r, 2)}×) and ${trendText}. Keep going.`);
+  else set("maintaining", "Maintaining", "", `Lifting load is in your normal range (${num(r, 2)}×) and ${trendText}.`);
+  return res;
+}
+
+// Day-after comparisons: lifting vs not, and heavy legs vs not.
+function strengthSwimLink() {
+  const ev = strengthEvents();
+  const lifted = new Set(ev.map((e) => e.date));
+  const heavyLegs = new Set(ev.filter((e) => e.w && groupSets(e.w).legs >= HV.freshHeavySets + 2).map((e) => e.date));
+  const prevDay = (d) => addDays(d, -1);
+  const sets = [];
+  const split = (items, pick, inSet, label, fmt, lowerBetter) => {
+    const a = items.filter((x) => inSet.has(prevDay(x.date))).map(pick).filter(nz), b = items.filter((x) => !inSet.has(prevDay(x.date))).map(pick).filter(nz);
+    sets.push({ label, a, b, fmt, lowerBetter });
+  };
+  const hrvDays = DATA.days.filter((d) => d.hrv && nz(d.hrv.avg)), rhrDays = DATA.days.filter((d) => nz(d.rhr));
+  const swims = DATA.activities.filter((a) => isSwim(a) && a.distance >= TS.swimMinDist && a.averageHR && (a.movingDuration || a.duration))
+    .map((a) => ({ date: actDate(a), e: a.distance / ((a.movingDuration || a.duration) / 60) / a.averageHR }));
+  const [hl, ll] = [["after lifting", "after other days", lifted], ["after heavy leg days", "after other days", heavyLegs]];
+  [hl, ll].forEach(([an, bn, inSet]) => {
+    split(hrvDays, (d) => d.hrv.avg, inSet, `HRV, ${an}`, (v) => `${num(v)} ms`, false);
+    split(rhrDays, (d) => d.rhr, inSet, `Resting HR, ${an}`, (v) => `${num(v, 1)} bpm`, true);
+    split(swims, (s) => s.e, inSet, `Swim efficiency, ${an}`, (v) => num(v, 3), false);
+  });
+  return sets.map((s) => ({ ...s, ok: s.a.length >= HV.pairMinN && s.b.length >= HV.pairMinN, ma: avg(s.a), mb: avg(s.b) }));
+}
+
+// ----- UI -----
+
+function hevyTitle(label) { return `<div class="card-head"><h2>${label}</h2><span class="muted small">${DATA.demo ? "Demo data" : "Estimated"}</span></div>`; }
+
+function gymCard(view, day) {
+  const g = gymStatus(day);
+  section(view, `${hevyTitle("Gym status")}${statusBadge(g, true)}<p class="note">${esc(g.reason)}</p>`);
+}
+
+function gymDetail(view) {
+  const g = gymStatus();
+  const arrow = { up: "Improving ↑", down: "Slipping ↓", flat: "Steady →" };
+  const lifts = (g.lifts || []).map((c) => [c.name, `${lift(c.cur)} <span class="muted small">est. 1RM now vs ${lift(c.prev)}</span>`]);
+  section(view, `${hevyTitle("Gym status")}${statusBadge(g, true)}<p class="note">${esc(g.reason)}</p>
+    <div class="tiles" style="margin-top:12px">
+      ${tile("This week's load", num(g.load7), "last 7 days")}
+      ${tile("4-week average", num(g.chronic), "per week")}
+      <div style="grid-column:1/-1">${tile("Load ratio", g.ratio === null ? "–" : `${num(g.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((g.ratio || 0) / 2))}</div>
+    </div>
+    <h3 style="margin-top:14px">Strength signals</h3>
+    ${g.signals.length ? rows(g.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`])) : `<p class="empty">Not enough data yet.</p>`}
+    ${lifts.length ? `<h3 style="margin-top:14px">Main lifts</h3>${rows(lifts)}` : ""}
+    <details><summary>How this is calculated</summary>
+      <p class="note">Gym load is an estimate: hard sets (warm-ups excluded) × ${HV.loadPerSet}, because Garmin counts lifting far too low. The ratio compares the last 7 days with your 4-week weekly average. Progress compares the best estimated 1-rep max (weight × (1 + reps ÷ 30), sets of ${HV.e1rmMaxReps} reps or fewer) on each lift over the last 4 weeks with the 4 before; lifts count double and weekly hard sets count once.</p>
+      <p class="note">It is judged separately from aerobic status: your swimming can improve while your lifts don't, and the reverse.</p>
+    </details>`);
+}
+
+function renderStrength(view) {
+  gymDetail(view);
+  const ev = strengthEvents();
+  const mon = mondayOf(localToday());
+  const week = ev.filter((e) => e.date >= mon && e.w), sums = week.reduce((s, e) => { const t = hevyStats(e.w); return { n: s.n + 1, sets: s.sets + t.sets, vol: s.vol + t.volume }; }, { n: 0, sets: 0, vol: 0 });
+  section(view, [
+    tile("This week", `${num(sums.n)}<small> sessions</small>`, `${num(sums.sets)} hard sets`),
+    tile("Volume this week", volText(sums.vol), "weight × reps, warm-ups excluded"),
+  ].join(""), "tiles");
+
+  // Muscle balance, last 28 days
+  const cut = addDays(localToday(), -27), totals = {}, grp = { push: 0, pull: 0, legs: 0, core: 0 };
+  DATA.hevy.workouts.filter((w) => hevyDate(w) >= cut).forEach((w) => {
+    Object.entries(muscleSets(w)).forEach(([m, v]) => { totals[m] = (totals[m] || 0) + v; });
+    Object.entries(groupSets(w)).forEach(([k, v]) => { grp[k] += v; });
+  });
+  const top = Object.entries(totals).sort((a, b) => b[1] - a[1]), mx = top.length ? top[0][1] : 1;
+  const bal = section(view, `<div class="card-head"><h2>Muscle balance</h2><span class="muted small">last 4 weeks · sets per week</span></div>
+    ${stackBar(GROUPS.map(([k, label, c]) => ({ label, value: grp[k], color: css(c), text: `${num(grp[k] / 4, 1)}/wk` })))}
+    ${top.length ? top.map(([m, v]) => `<div class="focus"><div class="focus-top"><span>${esc(humanize(m))}</span><b>${num(v / 4, 1)}</b></div>${meter(v / mx)}</div>`).join("") : `<p class="empty">No lifting in the last 4 weeks.</p>`}
+    <p class="note">Main muscle counts as a full set, helper muscles as half. A big gap between push and pull, or legs far behind, is worth a look.</p>`);
+
+  // Progress per lift
+  const hist = liftHistory().filter((l) => l.points.length >= 2).sort((a, b) => b.points.length - a.points.length).slice(0, 8);
+  if (hist.length) {
+    if (!hist.some((l) => l.key === state.lift)) state.lift = hist[0].key;
+    const cur = hist.find((l) => l.key === state.lift);
+    const chips = section(view, hist.map((l) => `<button class="chip ${l.key === state.lift ? "active" : ""}" data-lift="${esc(l.key)}">${esc(l.name)}</button>`).join(""), "chips");
+    chips.querySelectorAll(".chip").forEach((b) => b.onclick = () => { state.lift = b.dataset.lift; render(); });
+    const best = Math.max(...cur.points.map((p) => p.e1rm));
+    chartCard(view, `${cur.name} · estimated 1RM`, {
+      type: "line", labels: cur.points.map((p) => fmtDay(p.date, { day: "numeric", month: "short" })), xName: "Session",
+      tipLabels: cur.points.map((p) => `${fmtDay(p.date)} · best set ${lift(p.kg)} × ${p.reps}`),
+      series: [{ name: "Estimated 1RM", color: css("--s1"), values: cur.points.map((p) => (metric() ? p.e1rm : p.e1rm * 2.20462)) }],
+      yFmt: (v) => `${num(v)} ${metric() ? "kg" : "lb"}`, headRight: `<span class="muted small">best ${lift(best)}</span>`, dots: cur.points.length < 40,
+    }, "Estimated one-rep max from your best set each session. Going up = getting stronger.");
+  }
+
+  const prs = recentPRs();
+  section(view, `<h2>Recent personal records</h2>${prs.length ? rows(prs.map((p) => [p.name, `${lift(p.kg)} × ${p.reps} <span class="muted small">est. 1RM ${lift(p.e1rm)} · ${esc(fmtDay(p.date))}</span>`])) : `<p class="empty">No new records yet.</p>`}`);
+
+  // Lifting vs swimming and recovery
+  const link = strengthSwimLink();
+  const items = link.map((s) => s.ok
+    ? [s.label, `${s.fmt(s.ma)} vs ${s.fmt(s.mb)} <span class="muted small">${s.ma === s.mb ? "same" : `${Math.abs(((s.ma - s.mb) / s.mb) * 100).toFixed(1)}% ${(s.ma > s.mb) === !s.lowerBetter ? "better" : "worse"}`} · ${s.a.length} vs ${s.b.length}</span>`]
+    : [s.label, `<span class="muted small">needs more data: ${s.a.length} vs ${s.b.length}, need ${HV.pairMinN}+ in each</span>`]);
+  section(view, `<h2>Lifting, recovery and swimming</h2>${rows(items)}
+    <p class="note">Compares the day after lifting with the day after other days. Differences under about 5% are normal day-to-day noise, so treat this as a hint, not proof.</p>`);
 }
 
 // Rough healthy shares of 28-day load. A guide only, not Garmin's targets.
@@ -774,8 +1087,13 @@ function actSummary(a) {
   if (a.distance > 0) st.push(["", dist(a.distance)]);
   st.push(["", dur(actTime(a), "clock")]);
   const sp = actSpeed(a); if (sp) st.push(["", sp]);
-  if (a.totalSets) st.push(["Sets", num(a.activeSets ?? a.totalSets)]);
-  if (a.totalReps) st.push(["Reps", num(a.totalReps)]);
+  if (a.hevy) {
+    const h = hevyStats(a.hevy);
+    st.push(["", `${num(h.exercises)} exercises`], ["Sets", num(h.sets)], ["", volText(h.volume)]);
+  } else {
+    if (a.totalSets) st.push(["Sets", num(a.activeSets ?? a.totalSets)]);
+    if (a.totalReps) st.push(["Reps", num(a.totalReps)]);
+  }
   if (a.averageHR) st.push(["♥", `${num(a.averageHR)} bpm`]);
   if (a.trainingEffectLabel) st.push(["", humanize(a.trainingEffectLabel)]);
   return st.map(([k, v]) => `<span>${k ? esc(k) + " " : ""}<b>${esc(v)}</b></span>`).join("");
@@ -878,7 +1196,13 @@ function openActivity(id) {
   ]);
 
   u("totalSets", "activeSets", "totalReps");
-  if (a.totalSets || a.exerciseSets) {
+  if (a.hevy) {
+    const h = hevyStats(a.hevy);
+    const setText = (x) => `${x.kg > 0 ? lift(x.kg) + " × " : ""}${num(x.reps)}`;
+    const tbl = a.hevy.exercises.map((ex) => `<tr><td>${esc(exName(ex))}</td><td>${(ex.sets || []).map((x) => (x.type === "warmup" ? `<span class="muted">${esc(setText(x))}</span>` : esc(setText(x)))).join(", ")}</td></tr>`).join("");
+    html += `<section class="card"><h2>Strength · from Hevy</h2>${rows([["Exercises", num(h.exercises)], ["Hard sets", num(h.sets)], ["Volume", volText(h.volume)], ["Estimated gym load", num(hevyLoad(a.hevy))]])}
+      <div class="table-wrap"><table><tr><th>Exercise</th><th>Sets (warm-ups grey)</th></tr>${tbl}</table></div></section>`;
+  } else if (a.totalSets || a.exerciseSets) {
     const ex = (a.exerciseSets || []).filter((x) => x.sets);
     const table = ex.length ? `<div class="table-wrap"><table><tr><th>Exercise</th><th>Sets</th><th>Reps</th><th>Volume</th><th>Time</th></tr>${ex.map((x) =>
       `<tr><td>${esc(humanize(x.category))}</td><td>${num(x.sets)}</td><td>${num(x.reps)}</td><td>${x.volume ? weight(x.volume / 1000) : "–"}</td><td>${dur((x.duration || 0) / 1000, "clock")}</td></tr>`).join("")}</table></div>` : "";
@@ -917,7 +1241,7 @@ document.addEventListener("click", (e) => { const b = e.target.closest("[data-ac
 
 /* ---------- Views ---------- */
 
-const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Fitness" };
+const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Fitness", strength: "Strength" };
 
 function showUpdated() {
   const age = (Date.now() - new Date(DATA.generatedAt)) / 3600000;
@@ -926,14 +1250,16 @@ function showUpdated() {
 
 function render() {
   $("#tooltip").hidden = true;
+  if (state.tab === "strength" && !DATA.hevy) state.tab = "today";
   document.querySelectorAll(".tabbar button").forEach((b) => b.classList.toggle("active", b.dataset.tab === state.tab));
   $("#view-title").textContent = TITLES[state.tab];
   showUpdated();
-  $("#warnings").innerHTML = (DATA.errors || []).length
-    ? `<div class="banner">Some data couldn't be loaded on the last update: ${DATA.errors.map((e) => esc(e.split(":")[0])).join(", ")}.</div>` : "";
+  $("#warnings").innerHTML = ((DATA.errors || []).length
+    ? `<div class="banner">Some data couldn't be loaded on the last update: ${DATA.errors.map((e) => esc(e.split(":")[0])).join(", ")}.</div>` : "")
+    + (DATA.demo ? `<div class="banner">Preview: the lifting data is made up to show how Hevy would look. Your Garmin data is real and unchanged.</div>` : "");
   const view = $("#view");
   view.innerHTML = "";
-  ({ today: renderToday, sleep: renderSleep, activities: renderActivities, trends: renderTrends })[state.tab](view);
+  ({ today: renderToday, sleep: renderSleep, activities: renderActivities, trends: renderTrends, strength: renderStrength })[state.tab](view);
   window.scrollTo(0, 0);
 }
 
@@ -979,6 +1305,7 @@ function renderToday(view) {
 
   readinessCard(view, state.day);
   statusCard(view, state.day);
+  if (DATA.hevy) gymCard(view, state.day);
 
   const last14 = DATA.days.filter((x) => x.date <= state.day).slice(-14);
   const labels = last14.map((x) => fmtDay(x.date, { day: "numeric", month: "short" }));

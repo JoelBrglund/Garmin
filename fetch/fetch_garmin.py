@@ -24,6 +24,8 @@ except ImportError:
 
 from garmin_personal_api import GarminPersonalApiClient, PersonalApiAuthenticator
 
+import fetch_hevy
+
 REPO = Path(__file__).resolve().parents[1]
 LOCAL_KEY_FILE = REPO.parent / "Garmin API.env"
 OUT_FILE = REPO / "data" / "data.json"
@@ -247,6 +249,11 @@ def main() -> None:
         fitness_age = safe("fitness age", lambda: c.get_fitness_age(today), None)
         hr_zones = safe("heart rate zones", c.get_heart_rate_zones, None)
 
+    # Optional: strength workouts from Hevy (skipped silently when no key is set).
+    hevy = safe("hevy", lambda: fetch_hevy.fetch(start))
+    if hevy:
+        print(f"Hevy: {len(hevy['workouts'])} workouts, {len(hevy['templates'])} exercise types")
+
     data = {
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "timezone": str(tz),
@@ -259,6 +266,8 @@ def main() -> None:
         "hrZones": hr_zones,
         "errors": errors,
     }
+    if hevy:
+        data["hevy"] = hevy
     OUT_FILE.parent.mkdir(exist_ok=True)
     OUT_FILE.write_text(json.dumps(data, separators=(",", ":")), encoding="utf-8")
     print(f"Saved {len(data['days'])} days and {len(activities)} activities to {OUT_FILE.relative_to(REPO)}"

@@ -113,12 +113,13 @@ svg { display: block; }
 }
 
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   padding: 4px max(8px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(8px, env(safe-area-inset-left));
   background: color-mix(in srgb, var(--surface) 92%, transparent);
   -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
   border-top: 1px solid var(--border);
 }
+.tabbar button[hidden] { display: none; }
 .tabbar button {
   height: var(--tabbar-h); border: 0; background: none; display: grid; justify-items: center; align-content: center; gap: 3px;
   font-size: 11px; color: var(--muted); cursor: pointer;

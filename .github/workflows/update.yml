@@ -36,6 +36,8 @@ jobs:
       - name: Fetch Garmin data
         env:
           GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+          # Optional: Hevy PRO key for strength workouts. Leave the secret unset to skip Hevy.
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
         run: python fetch/fetch_garmin.py
 
       - name: Encrypt data
