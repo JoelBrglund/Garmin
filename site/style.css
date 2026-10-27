@@ -160,6 +160,11 @@ svg { display: block; }
 .status::before { content: ""; width: 9px; height: 9px; border-radius: 50%; background: var(--dot, var(--muted)); }
 .status.good { --dot: var(--good); } .status.warning { --dot: var(--warning); }
 .status.serious { --dot: var(--serious); } .status.critical { --dot: var(--critical); }
+.status.ts-big { font-size: 20px; }
+.status.ts-big::before { width: 12px; height: 12px; }
+.focus { margin-top: 8px; }
+.focus-top { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.focus .meter { margin-top: 4px; }
 
 /* Day picker & chips */
 .daypicker { display: flex; align-items: center; justify-content: space-between; gap: 8px; }

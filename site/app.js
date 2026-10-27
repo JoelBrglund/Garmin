@@ -313,6 +313,186 @@ function weekly(acts, value, weeks = 12) {
 }
 const isRealRun = (a) => /run/.test(a.type) && a.distance > 0;
 
+/* ---------- Estimated training status ----------
+   Garmin's API doesn't provide Training Status (it needs VO2 max), so this estimates it from
+   training load (Garmin's own per-workout number) and a fitness trend led by swimming.
+   All thresholds are in TS so they are easy to tune. See CLAUDE.md for the full explanation. */
+
+const TS = {
+  minDays: 28, minWorkouts: 6,             // below this: "No status"
+  over: 1.5, overStressed: 1.3,            // load ratio (this week / 4-week weekly average)
+  recovery: 0.8, detrain: 0.5, peakMax: 1.05, productiveMin: 1.0,
+  swimMinDist: 1500, swimMinN: 4, swimTol: 0.03,   // swim windows: last 28 days vs the 28 before
+  rhrTol: 1.5, rhrRise: 3, hrvTol: 0.05, runMin: 6, runTol: 0.02,
+  trendCut: 0.25,                          // weighted vote needed to call a trend
+  anaerobicMinTE: 2.0,                     // anaerobic training effect that counts as high-intensity work
+  anaerobicWeight: 0.5,                    // anaerobic scores read high, so they count half in the load split
+};
+
+const median = (vals) => { const v = vals.filter(nz).sort((a, b) => a - b); return v.length ? (v[(v.length - 1) >> 1] + v[v.length >> 1]) / 2 : null; };
+
+// Compares a recent value with an earlier one. Returns "up" (better), "down" (worse) or "flat".
+function judge(cur, prev, tol, { relative = true, lowerIsBetter = false } = {}) {
+  const change = relative ? (cur - prev) / prev : cur - prev;
+  const better = lowerIsBetter ? -change : change;
+  return better > tol ? "up" : better < -tol ? "down" : "flat";
+}
+
+// Splits 28 days of training load into low aerobic, high aerobic and anaerobic.
+function loadFocus(day) {
+  const out = { low: 0, high: 0, an: 0 };
+  DATA.activities.forEach((a) => {
+    const age = (dayDate(day) - dayDate(actDate(a))) / 86400000;
+    const L = a.activityTrainingLoad;
+    if (age < 0 || age >= 28 || !nz(L)) return;
+    const ae = a.aerobicTrainingEffect || 0, an = a.anaerobicTrainingEffect || 0;
+    const anShare = an >= TS.anaerobicMinTE && ae + an > 0 ? (TS.anaerobicWeight * an) / (ae + an) : 0;
+    const z = [1, 2, 3, 4, 5].map((i) => a[`hrTimeInZone_${i}`] || 0), zt = z.reduce((x, y) => x + y, 0);
+    const lowShare = zt ? (z[0] + z[1]) / zt : 0.5;
+    out.an += L * anShare;
+    out.low += L * (1 - anShare) * lowShare;
+    out.high += L * (1 - anShare) * (1 - lowShare);
+  });
+  return { ...out, total: out.low + out.high + out.an };
+}
+
+function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
+  const age = (d) => (dayDate(day) - dayDate(d)) / 86400000;
+  const acts = DATA.activities.filter((a) => age(actDate(a)) >= 0);
+  const inWin = (list, get, lo, hi) => list.filter((x) => { const g = age(get(x)); return g >= lo && g < hi; });
+  const loadSum = (lo, hi) => inWin(acts, actDate, lo, hi).reduce((s, a) => s + (a.activityTrainingLoad || 0), 0);
+  const days = DATA.days.filter((d) => age(d.date) >= 0);
+
+  const load7 = loadSum(0, 7), chronic = loadSum(0, 28) / 4;
+  const ratio = chronic > 0 ? load7 / chronic : null;
+  const prevRatio = chronic > 0 ? loadSum(7, 14) / chronic : null;
+  const workouts = inWin(acts, actDate, 0, 28).length;
+  const res = { day, load7, chronic, ratio, workouts, signals: [], trend: null, focus: loadFocus(day) };
+
+  // --- Fitness signals (swimming leads) ---
+  const swims = acts.filter((a) => isSwim(a) && a.distance >= TS.swimMinDist && a.averageHR && (a.movingDuration || a.duration));
+  const swimWin = (val) => {
+    const cur = inWin(swims, actDate, 0, 28).map(val), prev = inWin(swims, actDate, 28, 56).map(val);
+    return cur.filter(nz).length >= TS.swimMinN && prev.filter(nz).length >= TS.swimMinN ? [median(cur), median(prev)] : null;
+  };
+  const add = (key, label, weight, verdict, detail) => res.signals.push({ key, label, weight, verdict, detail });
+
+  const eff = swimWin((a) => a.distance / ((a.movingDuration || a.duration) / 60) / a.averageHR);
+  if (eff) add("swimEff", "Swim efficiency", 2, judge(eff[0], eff[1], TS.swimTol),
+    `${num(eff[0], 3)} now vs ${num(eff[1], 3)} before (metres per minute per heartbeat)`);
+  // SWOLF depends on pool length (50 m pools read about double 25 m pools), so scale it to a 25 m pool.
+  const sw = swimWin((a) => a.averageSwolf > 0 && a.poolLength > 0 ? a.averageSwolf / (a.poolLength / 100 / 25) : null);
+  if (sw) add("swolf", "SWOLF (per 25 m)", 1, judge(sw[0], sw[1], TS.swimTol, { lowerIsBetter: true }),
+    `${num(sw[0], 1)} now vs ${num(sw[1], 1)} before (lower is better)`);
+
+  const rhrAvg = (lo, hi) => avg(inWin(days, (d) => d.date, lo, hi).map((d) => d.rhr));
+  const rhrNow = rhrAvg(0, 14), rhrPrev = rhrAvg(14, 56);
+  const rhrCount = inWin(days, (d) => d.date, 0, 14).filter((d) => nz(d.rhr)).length;
+  if (nz(rhrNow) && nz(rhrPrev) && rhrCount >= 7) add("rhr", "Resting heart rate", 1,
+    judge(rhrNow, rhrPrev, TS.rhrTol, { relative: false, lowerIsBetter: true }), `${num(rhrNow, 1)} bpm now vs ${num(rhrPrev, 1)} before`);
+
+  const hrvAvg = (lo, hi) => avg(inWin(days, (d) => d.date, lo, hi).map((d) => d.hrv?.avg));
+  const hrvNow = hrvAvg(0, 7), hrvPrev = hrvAvg(7, 49);
+  const latestHrv = [...days].reverse().find((d) => d.hrv)?.hrv;
+  const hrvLow = !!latestHrv && (/^(LOW|POOR)/.test(latestHrv.status || "")
+    || (nz(latestHrv.weekly) && nz(latestHrv.low) && latestHrv.weekly < latestHrv.low));
+  if (nz(hrvNow) && nz(hrvPrev)) {
+    const v = hrvLow ? "down" : judge(hrvNow, hrvPrev, TS.hrvTol);
+    add("hrv", "HRV", 1, v, `${num(hrvNow)} ms (7-day) vs ${num(hrvPrev)} before${hrvLow ? " · below your normal range" : ""}`);
+  }
+
+  const runs = inWin(acts.filter((a) => isRealRun(a) && a.averageHR && a.averageSpeed), actDate, 0, 56)
+    .sort((a, b) => actDate(a).localeCompare(actDate(b)));
+  if (runs.length >= TS.runMin) {
+    const e = (a) => (a.averageSpeed * 60) / a.averageHR;
+    const cur = median(runs.slice(-3).map(e)), prev = median(runs.slice(-9, -3).map(e));
+    add("runEff", "Running efficiency", 1, judge(cur, prev, TS.runTol), `${num(cur, 2)} now vs ${num(prev, 2)} before (metres per heartbeat)`);
+  }
+
+  // Weighted vote: improving +weight, declining -weight.
+  if (res.signals.length >= 2) {
+    const W = res.signals.reduce((s, x) => s + x.weight, 0);
+    const score = res.signals.reduce((s, x) => s + x.weight * (x.verdict === "up" ? 1 : x.verdict === "down" ? -1 : 0), 0) / W;
+    res.trend = score > TS.trendCut ? "up" : score < -TS.trendCut ? "down" : "flat";
+  }
+
+  // --- Status (first match wins) ---
+  const set = (key, label, tone, reason) => Object.assign(res, { key, label, tone, reason });
+  const trendText = { up: "your fitness signals are improving", down: "your fitness signals are slipping", flat: "your fitness signals are steady" }[res.trend] || "";
+  const rhrRose = nz(rhrNow) && nz(rhrPrev) && rhrNow - rhrPrev >= TS.rhrRise;
+  const enough = days.length >= TS.minDays && workouts >= TS.minWorkouts && ratio !== null;
+
+  if (!enough) set("none", "No status", "", `Needs at least ${TS.minDays} days of data and ${TS.minWorkouts} workouts in the last 4 weeks.`);
+  else if (ratio > TS.over || (ratio > TS.overStressed && (hrvLow || rhrRose)))
+    set("overreaching", "Overreaching", "critical", `This week's load is ${num(ratio, 2)}× your 4-week average${hrvLow || rhrRose ? " and recovery markers are strained" : ""}. Ease off for a few days.`);
+  else if (ratio < TS.detrain || (ratio < TS.recovery && prevRatio !== null && prevRatio < TS.recovery))
+    set("detraining", "Detraining", "warning", `Load has been well below your usual for a while (${num(ratio, 2)}× your 4-week average). Fitness starts to fade.`);
+  else if (ratio < TS.recovery)
+    set("recovery", "Recovery", "", `A lighter week (${num(ratio, 2)}× your 4-week average), good for absorbing recent training.`);
+  else if (res.trend === null)
+    set("none", "No status", "", "Not enough fitness data (swims, resting HR, HRV) to judge your trend yet.");
+  else if (res.trend === "down")
+    set("unproductive", "Unproductive", "warning", `Load is normal (${num(ratio, 2)}×) but ${trendText}. Check sleep, stress and recovery.`);
+  else if (res.trend === "up" && ratio <= TS.peakMax && !hrvLow)
+    set("peaking", "Peaking", "good", `Load is easy to moderate (${num(ratio, 2)}×) and ${trendText}. A good time to perform.`);
+  else if (res.trend === "up" && ratio >= TS.productiveMin)
+    set("productive", "Productive", "good", `Load is solid (${num(ratio, 2)}×) and ${trendText}. Keep going.`);
+  else set("maintaining", "Maintaining", "", `Load is in your normal range (${num(ratio, 2)}×) and ${trendText}.`);
+  return res;
+}
+
+// Rough healthy shares of 28-day load. A guide only, not Garmin's targets.
+const FOCUS_TARGETS = [
+  { key: "low", label: "Low aerobic", lo: 0.4, hi: 0.7, colorVar: "--s3" },
+  { key: "high", label: "High aerobic", lo: 0.25, hi: 0.5, colorVar: "--s1" },
+  { key: "an", label: "Anaerobic", lo: 0.05, hi: 0.2, colorVar: "--s2" },
+];
+
+function statusBadge(ts, big = false) {
+  return `<span class="status ${ts.tone}${big ? " ts-big" : ""}">${esc(ts.label)}</span>`;
+}
+
+// Small card for the Today tab.
+function statusCard(view, day) {
+  const ts = trainingStatus(day);
+  section(view, `<div class="card-head"><h2>Training status</h2><span class="muted small">Estimated</span></div>
+    ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>`);
+}
+
+// Detailed card for the Fitness tab.
+function statusDetail(view) {
+  const ts = trainingStatus();
+  const arrow = { up: "Improving ↑", down: "Slipping ↓", flat: "Steady →" };
+  const f = ts.focus;
+  const focusRows = f.total > 0 ? FOCUS_TARGETS.map((t) => {
+    const share = f[t.key] / f.total;
+    const where = share < t.lo ? "below the usual range" : share > t.hi ? "above the usual range" : "in the usual range";
+    return `<div class="focus"><div class="focus-top"><span>${t.label}</span><span><b>${num(f[t.key])}</b> · ${num(share * 100)}% <small class="muted">${where} (${num(t.lo * 100)}–${num(t.hi * 100)}%)</small></span></div>
+      <div class="meter"><span style="width:${Math.min(100, share * 100)}%;background:${css(t.colorVar)}"></span></div></div>`;
+  }).join("") : `<p class="empty">No workouts in the last 28 days.</p>`;
+  const sigRows = ts.signals.length
+    ? rows(ts.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`]))
+    : `<p class="empty">Not enough data yet.</p>`;
+  const swimSig = ts.signals.some((s) => s.key === "swimEff");
+  section(view, `<div class="card-head"><h2>Training status</h2><span class="muted small">Estimated – not Garmin's number</span></div>
+    ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
+    <div class="tiles" style="margin-top:12px">
+      ${tile("This week's load", num(ts.load7), "last 7 days")}
+      ${tile("4-week average", num(ts.chronic), "per week")}
+      <div style="grid-column:1/-1">${tile("Load ratio", ts.ratio === null ? "–" : `${num(ts.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((ts.ratio || 0) / 2))}</div>
+    </div>
+    <h3 style="margin-top:14px">Fitness signals</h3>
+    ${sigRows}
+    ${swimSig ? "" : `<p class="note">Swim signals need at least ${TS.swimMinN} swims of ${dist(TS.swimMinDist)}+ in each of the last two 4-week periods.</p>`}
+    <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
+    <details><summary>How this is calculated</summary>
+      <p class="note">Garmin doesn't share Training Status (it needs VO2 max), so this is an estimate from your data.</p>
+      <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
+      <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim efficiency (metres per minute per heartbeat, swims over ${dist(TS.swimMinDist)}) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and, when you have enough runs, running efficiency. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
+      <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight). The ranges shown are a rough guide, not Garmin's targets.</p>
+    </details>`);
+}
+
 /* ---------- Charts (SVG) ---------- */
 
 const NS = "http://www.w3.org/2000/svg";
@@ -719,6 +899,8 @@ function renderToday(view) {
       sl && nz(sl.respAvg) ? vsBaseline(sl.respAvg, baseline((x) => x.sleep?.respAvg, state.day), "brpm") : ""),
   ].join(""), "tiles");
 
+  statusCard(view, state.day);
+
   const last14 = DATA.days.filter((x) => x.date <= state.day).slice(-14);
   const labels = last14.map((x) => fmtDay(x.date, { day: "numeric", month: "short" }));
   const tipLabels = last14.map((x) => fmtDay(x.date));
@@ -834,6 +1016,8 @@ function renderTrends(view) {
   const chips = section(view, [[30, "30 days"], [90, "90 days"], [180, "6 months"], [365, "1 year"]].map(([v, t]) =>
     `<button class="chip ${state.range === v ? "active" : ""}" data-range="${v}">${t}</button>`).join(""), "chips");
   chips.querySelectorAll(".chip").forEach((b) => b.onclick = () => { state.range = +b.dataset.range; render(); });
+
+  statusDetail(view);
 
   const days = DATA.days.slice(-state.range);
   const from = days[0].date;

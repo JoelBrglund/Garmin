@@ -1,6 +1,6 @@
 // Service worker: lets the installed app open without internet by keeping the last copy.
 // Always tries the network first, so you see fresh data whenever you're online.
-const CACHE = "garmin-v2";
+const CACHE = "garmin-v3";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/apple-touch-icon.png", "icons/favicon.png"];
 
