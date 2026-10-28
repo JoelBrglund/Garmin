@@ -187,6 +187,10 @@ function applyDemo() {
   if (location.hash === "#demo-hevy" && !DATA.hevy && window.makeDemoHevy) { DATA.hevy = window.makeDemoHevy(DATA); DATA.demo = true; }
 }
 
+// A day counts once Garmin has returned something for it. Today often has only a weigh-in until the watch syncs.
+const hasDayData = (d) => nz(d.rhr) || !!d.hrv || !!d.sleep || nz(d.steps);
+const latestDate = () => ([...DATA.days].reverse().find(hasDayData) || DATA.days[DATA.days.length - 1]).date;
+
 function prepare() {
   applyDemo();
   linkHevy();
@@ -194,8 +198,8 @@ function prepare() {
   byDate.clear();
   DATA.days.forEach((d) => byDate.set(d.date, d));
   const todayStr = localToday();
-  const dates = DATA.days.map((d) => d.date);
-  if (!state.day || !byDate.has(state.day)) state.day = dates.includes(todayStr) ? todayStr : dates[dates.length - 1];
+  const dates = DATA.days.filter(hasDayData).map((d) => d.date);
+  if (!state.day || !dates.includes(state.day)) state.day = dates.includes(todayStr) ? todayStr : dates[dates.length - 1];
   const nights = DATA.days.filter((d) => d.sleep).map((d) => d.date);
   if (!state.night || !nights.includes(state.night)) state.night = nights[nights.length - 1] || null;
 }
@@ -408,7 +412,7 @@ function vo2Points(kind) {
 }
 
 // Current value (median of the last 6 weeks) and trend (last 4 weeks vs the 4 before).
-function vo2Summary(kind, day = DATA.days[DATA.days.length - 1].date) {
+function vo2Summary(kind, day = latestDate()) {
   const age = (p) => (dayDate(day) - dayDate(p.date)) / 86400000;
   const all = vo2Points(kind).filter((p) => age(p) >= 0);
   let pts = all, pool = null;
@@ -483,7 +487,7 @@ function loadFocus(day) {
   return { ...out, total: out.low + out.high + out.an };
 }
 
-function trainingStatus(day = DATA.days[DATA.days.length - 1].date) {
+function trainingStatus(day = latestDate()) {
   const age = (d) => (dayDate(day) - dayDate(d)) / 86400000;
   // Aerobic status looks at cardio only (swim, run, walk, bike); lifting has its own gauges.
   const acts = DATA.activities.filter((a) => age(actDate(a)) >= 0 && !isStrength(a));
@@ -584,7 +588,7 @@ const sdOf = (vals) => { const v = vals.filter(nz); if (v.length < 4) return nul
 // Training load counted toward fatigue. Lifting uses the Hevy-based gym load when available (Garmin under-counts it).
 const effLoad = (a) => (a.hevy ? Math.max(a.activityTrainingLoad || 0, hevyLoad(a.hevy)) : a.activityTrainingLoad || 0);
 
-function readiness(day = DATA.days[DATA.days.length - 1].date) {
+function readiness(day = latestDate()) {
   const days = DATA.days.filter((d) => d.date <= day).reverse(); // newest first
   const cur = days[0];
   const parts = [];
@@ -772,7 +776,7 @@ function freshness(day) {
   });
 }
 
-function gymStatus(day = DATA.days[DATA.days.length - 1].date) {
+function gymStatus(day = latestDate()) {
   const age = (d) => (dayDate(day) - dayDate(d)) / 86400000;
   const res = { day, signals: [], trend: null, ratio: null, load7: 0, chronic: 0, sessions: 0 };
   const set = (key, label, tone, reason) => Object.assign(res, { key, label, tone, reason });
@@ -1393,7 +1397,7 @@ function section(view, html, cls = "card") {
 }
 
 function renderToday(view) {
-  const dates = DATA.days.map((d) => d.date);
+  const dates = DATA.days.filter(hasDayData).map((d) => d.date);
   dayPicker(view, dates, state.day, (d) => { state.day = d; render(); });
   const d = byDate.get(state.day) || {};
   const sl = d.sleep, hrv = d.hrv;
