@@ -985,8 +985,8 @@ function statusDetail(view) {
   section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">All cardio</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
-      ${tile("This week's load", num(ts.load7), `last 7 days · <b>${num(ts.totalLoad7)}</b> with lifting`)}
-      ${tile("4-week average", num(ts.chronic), `per week · <b>${num(ts.totalChronic)}</b> with lifting`)}
+      ${tile("This week's load", num(ts.totalLoad7), `last 7 days · <b>${num(ts.load7)}</b> cardio only`)}
+      ${tile("4-week average", num(ts.totalChronic), `per week · <b>${num(ts.chronic)}</b> cardio only`)}
       <div style="grid-column:1/-1">${tile("Load ratio", ts.ratio === null ? "–" : `${num(ts.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((ts.ratio || 0) / 2))}</div>
     </div>
     <details><summary>Show fitness signals</summary>
@@ -996,7 +996,7 @@ function statusDetail(view) {
     <h3 style="margin-top:14px">Load by activity · last 28 days</h3>${typeParts.length ? stackBar(typeParts) : `<p class="empty">No cardio in the last 28 days.</p>`}
     <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
     <details><summary>How this is calculated</summary>
-      <p class="note">Covers all cardio: swimming, running, cycling, walking and any other activity that isn't lifting. Lifting is judged separately so one can't hide the other. The "with lifting" figures add every activity, as Garmin's acute and chronic load do.</p>
+      <p class="note">Covers all cardio: swimming, running, cycling, walking and any other activity that isn't lifting. Lifting is judged separately so one can't hide the other. The large load numbers add every activity, as Garmin's acute and chronic load do; the load ratio and status use the cardio-only figures.</p>
       <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
       <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim VO2 max (swim speed per fraction of heart-rate reserve, swims over ${dist(VO.swimMinDist)}, same pool only) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and running VO2 max. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
       <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight).</p>
