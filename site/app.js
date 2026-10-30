@@ -955,7 +955,7 @@ function statusBadge(ts, big = false) {
 // Small card for the Today tab.
 function statusCard(view, day) {
   const ts = trainingStatus(day);
-  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Swim · run · walk</span></div>
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">All cardio</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>`);
 }
 
@@ -974,7 +974,13 @@ function statusDetail(view) {
     ? rows(ts.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`]))
     : `<p class="empty">Not enough data yet.</p>`;
   const swimSig = ts.signals.some((s) => s.key === "swimVo2");
-  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">Swim · run · walk</span></div>
+  const byType = {};
+  DATA.activities.filter((a) => !isStrength(a) && (dayDate(ts.day) - dayDate(actDate(a))) / 86400000 >= 0 && (dayDate(ts.day) - dayDate(actDate(a))) / 86400000 < 28)
+    .forEach((a) => { byType[a.type] = (byType[a.type] || 0) + (a.activityTrainingLoad || 0); });
+  const palette = [css("--s1"), css("--s2"), css("--s3"), css("--s4"), css("--o3"), css("--o1")];
+  const typeParts = Object.entries(byType).filter(([, v]) => v > 0).sort((x, y) => y[1] - x[1])
+    .map(([t, v], i) => ({ label: humanize(t), value: v, color: palette[i % palette.length], text: num(v) }));
+  section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">All cardio</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(ts.load7), "last 7 days")}
@@ -985,9 +991,10 @@ function statusDetail(view) {
       ${sigRows}
       ${swimSig ? "" : `<p class="note">Swim VO2 max needs at least ${VO.minN} swims of ${dist(VO.swimMinDist)}+ in the same pool in each of the last two 4-week periods.</p>`}
     </details>
+    <h3 style="margin-top:14px">Load by activity · last 28 days</h3>${typeParts.length ? stackBar(typeParts) : `<p class="empty">No cardio in the last 28 days.</p>`}
     <h3 style="margin-top:14px">Load focus · last 28 days</h3>${focusRows}
     <details><summary>How this is calculated</summary>
-      <p class="note">Covers cardio only (swimming, running, walking); lifting is judged separately so one can't hide the other.</p>
+      <p class="note">Covers all cardio: swimming, running, cycling, walking and any other activity that isn't lifting. Lifting is judged separately so one can't hide the other.</p>
       <p class="note"><b>Load</b> is Garmin's training load for every workout. The ratio compares the last 7 days with your 4-week weekly average. Very high is Overreaching, very low is Recovery or Detraining.</p>
       <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim VO2 max (swim speed per fraction of heart-rate reserve, swims over ${dist(VO.swimMinDist)}, same pool only) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and running VO2 max. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
       <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight).</p>
