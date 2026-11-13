@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,7 +23,7 @@ try:  # Use the operating system's trusted certificates (fixes SSL errors behind
 except ImportError:
     pass
 
-from garmin_personal_api import GarminPersonalApiClient, PersonalApiAuthenticator
+from garmin_personal_api import GarminPersonalApiClient, HttpError, PersonalApiAuthenticator
 
 import fetch_hevy
 
@@ -35,6 +36,31 @@ MAX_ACTIVITIES = 1000
 # Activity fields that are not needed on the dashboard (personal info and location).
 ACTIVITY_SKIP = ("owner", "startLatitude", "startLongitude", "endLatitude", "endLongitude",
                  "activityUUID", "userProfileId", "privacy")
+
+
+def is_temporary(e: Exception) -> bool:
+    """Worth retrying: Garmin rate limits (429), server errors (5xx) and network hiccups.
+
+    Not worth retrying: a wrong or expired key (401/403) or a bad request (4xx), which would fail again.
+    """
+    if isinstance(e, HttpError):
+        return e.status_code == 429 or e.status_code >= 500
+    return not isinstance(e, (KeyError, ValueError, TypeError, AttributeError))
+
+
+def with_retries(fn, what: str, attempts: int = 4, first_wait: float = 5):
+    """Call fn(); on a temporary error wait (5 s, 10 s, 20 s) and try again before giving up."""
+    wait = first_wait
+    for attempt in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == attempts or not is_temporary(e):
+                raise
+            status = f" HTTP {e.status_code}" if isinstance(e, HttpError) else ""
+            print(f"Retrying {what} ({attempt}/{attempts - 1}) after {type(e).__name__}{status}", file=sys.stderr)
+            time.sleep(wait)
+            wait *= 2
 
 
 def load_api_key() -> str:
@@ -185,13 +211,13 @@ def activity_row(a: dict) -> dict:
 def main() -> None:
     key = load_api_key()
     with PersonalApiAuthenticator() as auth:
-        token = auth.obtain_token(key)
+        token = with_retries(lambda: auth.obtain_token(key), "Garmin login")
 
     errors: list[str] = []
 
     def safe(label, fn, default=None):
         try:
-            return fn()
+            return with_retries(fn, label)
         except Exception as e:  # Keep going so one failing data type doesn't stop the update.
             errors.append(f"{label}: {type(e).__name__}: {str(e)[:200]}")
             print("WARNING", errors[-1], file=sys.stderr)
