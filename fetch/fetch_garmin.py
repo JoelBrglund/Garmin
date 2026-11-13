@@ -272,6 +272,15 @@ def main() -> None:
             "bodyBattery": series(bb_day[-1].get("bodyBatteryValuesArray")) if bb_day else [],
             "rhr7dayAvg": hr_day.get("lastSevenDaysAvgRestingHeartRate"),
         }
+        # When did the watch last deliver data to Garmin? The newest heart-rate reading (today, else yesterday) or workout end.
+        last_sync = max((t for t, _ in intraday["hr"]), default=None)
+        if last_sync is None:
+            hr_prev = safe("heart rate (yesterday)", lambda: c.get_daily_heart_rate(today - timedelta(days=1)), {}) or {}
+            last_sync = max((t for t, _ in series(hr_prev.get("heartRateValues"))), default=None)
+        for a in activities:
+            end = (a.get("beginTimestamp") or 0) + int((a.get("duration") or 0) * 1000)
+            if end and (last_sync is None or end > last_sync):
+                last_sync = end
         fitness_age = safe("fitness age", lambda: c.get_fitness_age(today), None)
         hr_zones = safe("heart rate zones", c.get_heart_rate_zones, None)
 
@@ -288,6 +297,7 @@ def main() -> None:
         "days": [days[k] for k in sorted(days)],
         "activities": sorted(activities, key=lambda a: a.get("startTimeLocal", ""), reverse=True),
         "intraday": intraday,
+        "lastSync": last_sync,
         "fitnessAge": fitness_age,
         "hrZones": hr_zones,
         "errors": errors,

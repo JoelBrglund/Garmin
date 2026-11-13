@@ -102,6 +102,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .icon-btn.busy svg { animation: none; opacity: 0.5; } }
 #refresh-status { margin-top: 2px; }
+#refresh-status.action { color: var(--accent); font-weight: 600; }
 .view {
   padding: 4px max(16px, env(safe-area-inset-right)) calc(var(--tabbar-h) + 24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
   display: grid; gap: 14px;

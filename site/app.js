@@ -79,6 +79,30 @@ $("#lock-btn").addEventListener("click", () => { store.del(PASS_KEY); showLock()
    waits for the new data to be published, which takes about 2-3 minutes. */
 
 let refreshing = false, lastCheck = 0, statusTimer = null;
+let needSync = false; // set after telling the user to sync their watch, so their next refresh fetches straight away
+
+const SYNC_STALE_MIN = 60;   // Garmin's newest watch data older than this (at fetch time) = the watch hasn't synced
+const FRESH_FETCH_MIN = 10;  // data fetched this recently counts as "already up to date"
+
+// Minutes between the Garmin fetch and the newest data the watch had delivered by then.
+const syncGap = (d) => (d.lastSync ? (new Date(d.generatedAt) - d.lastSync) / 60000 : null);
+const syncStale = (d) => { const g = syncGap(d); return g !== null && g > SYNC_STALE_MIN; };
+function whenText(ms) {
+  const day = new Intl.DateTimeFormat("en-CA", { timeZone: DATA.timezone }).format(new Date(ms)), t = localToday();
+  const clock = clockReal(ms);
+  return day === t ? clock : (relDay(day) === "Yesterday" ? `yesterday ${clock}` : `${fmtDay(day)} ${clock}`);
+}
+function syncMessage(d, prefix = "") {
+  const mins = Math.max(1, Math.round((Date.now() - d.lastSync) / 60000));
+  const age = mins >= 60 ? `${Math.floor(mins / 60)} h ${pad2(mins % 60)} min` : `${mins} min`;
+  return `${prefix}Garmin's newest data from your watch is from ${whenText(d.lastSync)} (${age} ago). Open the Garmin Connect app to sync your watch, then press refresh again.`;
+}
+// Called when new data has arrived: confirm, or ask for a watch sync if the watch is behind.
+function finishUpdate() {
+  if (syncStale(DATA)) { needSync = true; return setStatus(syncMessage(DATA, "Updated, but "), "action", 0); }
+  needSync = false;
+  return setStatus("Updated with the latest data.", "", 5000);
+}
 const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
 const minutesSince = (iso) => (Date.now() - new Date(iso)) / 60000;
 
@@ -86,7 +110,7 @@ function setStatus(text, kind = "", clearAfter = 0) {
   clearTimeout(statusTimer);
   const el = $("#refresh-status");
   el.textContent = text;
-  el.className = `small ${kind === "error" ? "error" : "muted"}`;
+  el.className = `small ${kind === "error" ? "error" : kind === "action" ? "action" : "muted"}`;
   el.hidden = !text;
   if (clearAfter) statusTimer = setTimeout(() => setStatus(""), clearAfter);
 }
@@ -121,10 +145,14 @@ async function refresh() {
   try {
     if (!navigator.onLine) return setStatus("You're offline - showing the last saved data.", "", 6000);
     setStatus("Checking for new data…");
-    if (await reloadData()) return setStatus("Updated with the latest data.", "", 5000);
+    if (await reloadData()) return finishUpdate();
     const r = DATA.refresh;
+    const fresh = minutesSince(DATA.generatedAt) < FRESH_FETCH_MIN;
+    // Garmin was asked a moment ago and its newest watch data is old: say so now rather than fetching the same thing again.
+    if (!needSync && fresh && syncStale(DATA)) { needSync = true; return setStatus(syncMessage(DATA), "action", 0); }
     if (!r?.token) return setStatus("Already up to date. New data arrives every 3 hours.", "", 6000);
-    if (minutesSince(DATA.generatedAt) < 10) return setStatus("Already up to date - fetched from Garmin a few minutes ago.", "", 6000);
+    // After a "sync your watch" message the next refresh goes straight to Garmin, however recent the last fetch was.
+    if (!needSync && fresh) return setStatus("Already up to date - fetched from Garmin a few minutes ago.", "", 6000);
 
     // Start the update, unless one is already running.
     const started = Date.now();
@@ -136,7 +164,7 @@ async function refresh() {
       const s = Math.round((Date.now() - started) / 1000);
       setStatus(`Getting new data from Garmin… ${Math.floor(s / 60)}:${pad2(s % 60)} (usually 2-3 min)`);
       await sleepMs(5000);
-      if (await reloadData()) return setStatus("Updated with the latest data.", "", 5000);
+      if (await reloadData()) return finishUpdate();
       if (++polls % 3 === 0) { // check the run itself every 15 s so a failure is reported right away
         const run = await latestRun(r);
         if (run && run.status === "completed" && run.conclusion !== "success" && new Date(run.created_at) > started - 60000)
