@@ -79,6 +79,16 @@ $("#lock-btn").addEventListener("click", () => { store.del(PASS_KEY); showLock()
    waits for the new data to be published, which takes about 2-3 minutes. */
 
 let refreshing = false, lastCheck = 0, statusTimer = null;
+let swReg = null, hadController = false, reloadingForUpdate = false;
+
+// Ask the browser whether a newer version of the app exists (it compares sw.js, which changes with every release).
+function checkForUpdate() { if (swReg) swReg.update().catch(() => {}); }
+function reloadWhenIdle() {
+  if (reloadingForUpdate) return;
+  if (refreshing || !$("#sheet").hidden) return void setTimeout(reloadWhenIdle, 2000); // don't interrupt what you're doing
+  reloadingForUpdate = true;
+  location.reload();
+}
 let needSync = false; // set after telling the user to sync their watch, so their next refresh fetches straight away
 
 const SYNC_STALE_MIN = 60;   // Garmin's newest watch data older than this (at fetch time) = the watch hasn't synced
@@ -139,6 +149,7 @@ const latestRun = async (r) => (await github(r, `workflows/${r.workflow}/runs?pe
 
 async function refresh() {
   if (refreshing || !DATA) return;
+  checkForUpdate();
   refreshing = true;
   const btn = $("#refresh-btn");
   btn.classList.add("busy"); btn.setAttribute("aria-busy", "true");
@@ -184,12 +195,20 @@ $("#refresh-btn").addEventListener("click", refresh);
 
 // The installed iPhone app resumes where it was left, so quietly check for new data when it comes back.
 document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") checkForUpdate();
   if (document.visibilityState === "visible" && DATA && !refreshing && Date.now() - lastCheck > 5 * 60000)
     reloadData().catch(() => {});
 });
+setInterval(() => { if (document.visibilityState === "visible") checkForUpdate(); }, 30 * 60000);
 
 (async function start() {
-  if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  if ("serviceWorker" in navigator) {
+    hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register("sw.js").then((r) => { swReg = r; }).catch(() => {});
+    // A new version took over: reload so the page runs it (the installed app otherwise keeps the old code in memory).
+    // (The very first takeover on a first-ever visit is normal; any later one means a new version.)
+    navigator.serviceWorker.addEventListener("controllerchange", () => { if (hadController) reloadWhenIdle(); hadController = true; });
+  }
   const pass = store.get(PASS_KEY);
   if (!pass) return showLock();
   try { await unlock(pass, true); }

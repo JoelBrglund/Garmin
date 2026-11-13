@@ -1,6 +1,6 @@
 // Service worker: lets the installed app open without internet by keeping the last copy.
 // Always tries the network first, so you see fresh data whenever you're online.
-const CACHE = "garmin-v16";
+const CACHE = "garmin-v17";
 const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/apple-touch-icon.png", "icons/favicon.png"];
 
@@ -18,7 +18,8 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request)
+    // "no-cache" = ask the server whether the file changed (a cheap 304 when it hasn't), so a new version never waits out the host's 10-minute cache.
+    fetch(e.request, { cache: "no-cache" })
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
