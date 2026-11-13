@@ -1249,8 +1249,6 @@ function buildSchedule(opts = {}) {
     const next = days[i + 1];
     if (next && hardOn(d) && hardOn(next)) warnings.push({ date: d.date, text: `Two hard sessions in a row (${fmtDay(d.date)} and ${fmtDay(next.date)}). Leave a day between them.` });
     if (next && has(d, "lift-lower") && next.items.some((x) => x.role === "quality")) warnings.push({ date: d.date, text: `Lower lift the day before your harder swim (${fmtDay(d.date)} to ${fmtDay(next.date)}): your legs may be tired for it.` });
-    if (has(d, "lift-upper") && has(d, "climb")) warnings.push({ date: d.date, text: `Upper lift and climbing on the same day (${fmtDay(d.date)}) is a lot for your arms and back.` });
-    if (next && ((has(d, "lift-upper") && has(next, "climb")) || (has(d, "climb") && has(next, "lift-upper")))) warnings.push({ date: d.date, text: `Upper lift and climbing on back-to-back days (${fmtDay(d.date)}, ${fmtDay(next.date)}): your arms and back get little recovery.` });
   });
   if (days.every((d) => d.items.some((x) => x.base))) warnings.push({ date: today, text: "No rest day in the next 7 days." });
 
@@ -1360,43 +1358,38 @@ function schedAction(d) {
   render();
 }
 
-function sessionHtml(it, date, isToday) {
+function sessionHtml(it, date) {
   const k = SCH.kinds[it.kind], title = it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label;
-  const chip = it.done ? `<span class="chip-status">✓ Done${it.done.minutes ? ` · ${it.done.minutes} min` : ""}</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
-  const acts = [];
-  if (it.kind === "climb") acts.push(`<button class="link-btn" data-sch="done" data-id="${esc(it.id)}">${it.done ? "Undo done" : "Mark done"}</button>`);
+  const chip = it.done ? `<span class="chip-status">✓ Done</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
+  const mins = (it.done && it.done.minutes) || it.minutes;
+  const menu = [];
   if (it.base) {
-    acts.push(`<button class="link-btn" data-sch="move" data-date="${date}" data-kind="${it.kind}">Move</button>`);
-    acts.push(`<button class="link-btn" data-sch="remove" data-date="${date}" data-kind="${it.kind}">Remove</button>`);
-  } else acts.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
-  return `<div class="sess ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
-    <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}${it.minutes ? `<span class="sess-dur">${it.minutes} min</span>` : ""}</div>
-    ${it.text ? `<p class="sess-note">${esc(it.text)}</p>` : ""}
-    <div class="sess-actions">${acts.join("")}</div></div>`;
+    menu.push(`<button class="link-btn" data-sch="move" data-date="${date}" data-kind="${it.kind}">Move</button>`);
+    menu.push(`<button class="link-btn" data-sch="remove" data-date="${date}" data-kind="${it.kind}">Remove</button>`);
+  } else menu.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
+  if (it.kind === "climb" && it.done) menu.unshift(`<button class="link-btn" data-sch="done" data-id="${esc(it.id)}">Undo done</button>`);
+  const quick = it.kind === "climb" && !it.done ? `<button class="link-btn quick" data-sch="done" data-id="${esc(it.id)}">Mark done</button>` : "";
+  return `<div class="sess compact ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
+    <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}<span class="sess-dur">${mins ? mins + " min" : ""}</span>${quick}
+      <button class="more-btn" data-sch="more" aria-label="More options for ${esc(title)}">⋯</button></div>
+    <div class="sess-actions" hidden>${menu.join("")}</div></div>`;
 }
 
 function renderSchedule(view) {
   const st = schedState(), plan = buildSchedule({ state: st }), today = plan.today;
   const sug = suggestGoal(plan.ts, plan.rd);
-  const seg = Object.entries(SCH.goals).map(([k, g]) => `<button class="seg-btn ${k === plan.goal ? "active" : ""}" data-sch="goal" data-goal="${k}" aria-pressed="${k === plan.goal}">${g.label}</button>`).join("");
-  section(view, `<div class="card-head"><h2>Training plan</h2></div>
-    <div class="seg" role="group" aria-label="Training goal">${seg}</div>
-    <p class="note">${esc(SCH.text[plan.goal])}</p>
-    <p class="note">Suggested right now: <b>${esc(SCH.goals[sug.goal].label)}</b>. ${esc(sug.reason)}</p>`);
-  section(view, [
-    tile("Planned cardio load", num(plan.planned), `target ${num(plan.target)} · 4-week average ${num(plan.ts.chronic)}`),
-    tile("Planned time", dur(plan.minutes * 60), "all sessions, next 7 days"),
-  ].join(""), "tiles");
+  const seg = Object.entries(SCH.goals).map(([k, g]) => `<button class="seg-btn ${k === plan.goal ? "active" : ""}" data-sch="goal" data-goal="${k}" aria-pressed="${k === plan.goal}">${g.label}${k === sug.goal ? `<span class="sug-dot" role="img" aria-label="suggested right now" title="Suggested right now"></span>` : ""}</button>`).join("");
+  section(view, `<div class="card-head"><h2>Training plan</h2><span class="plan-stats"><span><b>${num(plan.planned)}</b> cardio load</span><span><b>${dur(plan.minutes * 60)}</b> planned</span></span></div>
+    <div class="seg" role="group" aria-label="Training goal">${seg}</div>`);
   if (plan.warnings.length) section(view, `<h2>Worth a look</h2>${plan.warnings.map((w) => `<p class="note">⚠️ ${esc(w.text)}</p>`).join("")}`);
   plan.days.forEach((d) => {
     const isToday = d.i === 0;
-    section(view, `<div class="card-head"><h2>${esc(fmtDay(d.date))}</h2><span class="muted small">${isToday ? "Today" : d.i === 1 ? "Tomorrow" : ""}</span></div>
-      ${d.items.map((it) => sessionHtml(it, d.date, isToday)).join("")}
-      ${d.notes.map((n) => `<p class="note">${esc(n)}</p>`).join("")}
-      <p class="add-row"><button class="link-btn" data-sch="add" data-date="${d.date}">＋ Add session</button></p>`, `card day${isToday ? " today" : ""}`);
+    section(view, `<div class="card-head"><h2>${esc(fmtDay(d.date))}</h2><span class="head-right"><span class="muted small">${isToday ? "Today" : d.i === 1 ? "Tomorrow" : ""}</span><button class="link-btn" data-sch="add" data-date="${d.date}" aria-label="Add a session on ${esc(fmtDay(d.date))}">＋ Add</button></span></div>
+      ${d.items.map((it) => sessionHtml(it, d.date)).join("")}
+      ${d.notes.map((n) => `<p class="note">${esc(n)}</p>`).join("")}`, `card day${isToday ? " today" : ""}`);
   });
 
-  // Last 7 days
+  // Last 7 days (collapsed)
   const past = scheduleAdherence(st, today);
   const free = plan.days.find((d) => baseKinds(d.date, st).length === 0);
   const pastRows = past.map((p) => {
@@ -1406,16 +1399,19 @@ function renderSchedule(view) {
       ${p.status === "missed" ? `<button class="link-btn" data-sch="skip" data-id="${esc(p.id)}">Skip</button>${p.kind === "climb" ? `<button class="link-btn" data-sch="done" data-id="${esc(p.id)}">Mark done</button>` : ""}${catchable ? `<button class="link-btn" data-sch="catchup" data-id="${esc(p.id)}" data-kind="${p.kind}" data-to="${free.date}">Add on ${esc(fmtDay(free.date, { weekday: "short" }))}</button>` : ""}` : ""}</div>`;
   }).join("");
   const missed = past.filter((p) => p.status === "missed").length, doneN = past.filter((p) => p.status === "done").length;
-  section(view, `<div class="card-head"><h2>Last 7 days</h2><span class="muted small">${doneN} done${missed ? ` · ${missed} missed` : ""}</span></div>${pastRows || `<p class="empty">Nothing planned.</p>`}
-    <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself.</p>`);
+  section(view, `<details><summary>Last 7 days · ${doneN} done${missed ? ` · ${missed} missed` : ""}</summary>${pastRows || `<p class="empty">Nothing planned.</p>`}</details>`);
 
   section(view, `<details><summary>How the plan is made</summary>
+    <p class="note"><b>Goals.</b> Improve: ${esc(SCH.text.improve)} Maintain: ${esc(SCH.text.maintain)} Recover: ${esc(SCH.text.recover)} The dot on a goal marks the one suggested right now: ${esc(sug.reason)}</p>
     <p class="note">${esc(plan.why)}</p>
-    <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Mostly easy zone 2 on the bike, with one tempo session a week when improving. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. You can add any session to any day.</p>
+    <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Easy bike or run: zone 2${zoneText(2)}, conversational. Tempo bike (one a week when improving): 10 min easy, 3 × 8 min in zone 3–4${zoneText(3)}, easy between and at the end. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. Tap ⋯ on a session to move, remove or skip it, and use ＋ Add on a day to add any session.</p>
     <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. For load, the swim where your legs are fresh (Thursday) counts as the harder one and Tuesday's as easier.</p>
-    <p class="note">Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
+    <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself. Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
     <p class="note"><button class="link-btn" data-sch="reset">Reset to the standard week</button></p></details>`);
-  view.querySelectorAll("[data-sch]").forEach((el) => el.addEventListener("click", () => schedAction(el.dataset)));
+  view.querySelectorAll("[data-sch]").forEach((el) => el.addEventListener("click", () => {
+    if (el.dataset.sch === "more") el.closest(".sess").querySelector(".sess-actions").toggleAttribute("hidden");
+    else schedAction(el.dataset);
+  }));
 }
 
 /* ---------- Charts (SVG) ---------- */
