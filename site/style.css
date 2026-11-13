@@ -19,6 +19,8 @@
   /* status (always shown with a label) */
   --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
   --good-text: #006300;
+  /* activity colours, as in Garmin */
+  --act-strength: #f2b705; --act-run: #e5484d; --act-swim: #2f80ed; --act-bike: #2eaa4a; --act-climb: #8e5bd6; --act-walk: #14a3a3;
   --radius: 14px;
   --tabbar-h: 58px;
 }
@@ -32,6 +34,7 @@
     --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
     --o1: #cde2fb; --o2: #86b6ef; --o3: #3987e5; --o4: #1c5cab; --o5: #184f95;
     --good-text: #0ca30c;
+    --act-strength: #f5c63d; --act-run: #ef6b6b; --act-swim: #5aa2f5; --act-bike: #4cc46a; --act-climb: #a681e6; --act-walk: #35bfbf;
   }
 }
 :root[data-theme="dark"] {
@@ -43,6 +46,7 @@
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
   --o1: #cde2fb; --o2: #86b6ef; --o3: #3987e5; --o4: #1c5cab; --o5: #184f95;
   --good-text: #0ca30c;
+  --act-strength: #f5c63d; --act-run: #ef6b6b; --act-swim: #5aa2f5; --act-bike: #4cc46a; --act-climb: #a681e6; --act-walk: #35bfbf;
 }
 
 * { box-sizing: border-box; }
@@ -188,7 +192,7 @@ svg { display: block; }
 .row span:last-child { text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; }
 .act { display: grid; grid-template-columns: 38px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid var(--grid); cursor: pointer; text-align: left; background: none; border-left: 0; border-right: 0; border-bottom: 0; width: 100%; }
 .act:first-child { border-top: 0; }
-.act-icon { width: 38px; height: 38px; border-radius: 10px; background: var(--accent-wash); color: var(--accent); display: grid; place-items: center; font-size: 18px; }
+.act-icon { width: 38px; height: 38px; border-radius: 10px; background: color-mix(in srgb, var(--c, var(--accent)) 22%, var(--surface)); display: grid; place-items: center; font-size: 18px; }
 .act-name { font-weight: 600; }
 .act-meta { font-size: 13px; color: var(--muted); }
 .act-stats { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 13.5px; margin-top: 3px; color: var(--text-2); }
@@ -234,3 +238,23 @@ th, td { padding: 6px 8px; text-align: right; border-top: 1px solid var(--grid);
 th:first-child, td:first-child { text-align: left; }
 th { color: var(--muted); font-weight: 500; border-top: 0; }
 details summary { cursor: pointer; color: var(--accent); font-size: 13.5px; margin-top: 8px; }
+
+/* Schedule */
+.seg { display: flex; gap: 6px; }
+.seg-btn { flex: 1; padding: 10px 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text-2); font-weight: 600; font-size: 15px; cursor: pointer; }
+.seg-btn.active { background: var(--text); color: var(--page); border-color: var(--text); }
+.card.day.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.sess { border-left: 5px solid var(--c, var(--accent)); background: color-mix(in srgb, var(--c, var(--accent)) 14%, var(--surface)); border-radius: 10px; padding: 10px 12px; margin-top: 8px; }
+.sess.skipped { opacity: 0.5; }
+.sess-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sess-dur { margin-left: auto; font-weight: 600; }
+.sess-note { font-size: 13.5px; color: var(--text-2); margin: 4px 0 0; }
+.sess-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.sess-actions:empty { display: none; }
+.link-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
+.chip-status { font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); }
+.chip-status.missed { border-color: var(--critical); color: var(--critical); }
+.past-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--grid); font-size: 14px; }
+.past-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--accent)); flex: none; }
+.move-day { display: block; width: 100%; text-align: left; padding: 10px 12px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 15px; }
+.move-day:disabled { opacity: 0.4; cursor: default; }

@@ -1009,7 +1009,7 @@ function statusDetail(view) {
     .forEach((a) => { byType[a.type] = (byType[a.type] || 0) + (a.activityTrainingLoad || 0); });
   const palette = [css("--s1"), css("--s2"), css("--s3"), css("--s4"), css("--o3"), css("--o1")];
   const typeParts = Object.entries(byType).filter(([, v]) => v > 0).sort((x, y) => y[1] - x[1])
-    .map(([t, v], i) => ({ label: humanize(t), value: v, color: palette[i % palette.length], text: num(v) }));
+    .map(([t, v], i) => ({ label: humanize(t), value: v, color: actColorVar(t) ? css(actColorVar(t)) : palette[i % palette.length], text: num(v) }));
   section(view, `<div class="card-head"><h2>Aerobic status</h2><span class="muted small">All cardio</span></div>
     ${statusBadge(ts, true)}<p class="note">${esc(ts.reason)}</p>
     <div class="tiles" style="margin-top:12px">
@@ -1029,6 +1029,336 @@ function statusDetail(view) {
       <p class="note"><b>Fitness trend</b> compares the last 4 weeks with the 4 weeks before. Swimming leads: swim VO2 max (swim speed per fraction of heart-rate reserve, swims over ${dist(VO.swimMinDist)}, same pool only) counts double, then SWOLF scaled to a 25 m pool, resting heart rate, HRV and running VO2 max. Improving signals give Productive or Peaking; slipping ones give Unproductive.</p>
       <p class="note"><b>Load focus</b> splits load by heart-rate zone (zones 1–2 low aerobic, 3–4 high aerobic) and by anaerobic training effect (counted at half weight).</p>
     </details>`);
+}
+
+
+/* ---------- Schedule ----------
+   A 7-day plan: your fixed weekly skeleton plus aerobic sessions where they make sense. The goal (improve /
+   maintain / recover) sets how hard the week is. Moves, ticks and the goal are kept on this device only. */
+
+const SCH = {
+  key: "garmin-schedule-v1",
+  // Your fixed week (0 = Sunday). Edit here to change the standard week.
+  skeleton: { 1: ["lift-upper"], 2: ["lift-lower", "swim"], 3: ["climb"], 4: ["swim"], 5: ["lift-upper"], 6: [], 0: ["climb"] },
+  addOnMax: 45,                  // no extra cardio session is ever longer than this (minutes)
+  maxRamp: 1.15,                 // never plan more than +15% over last week's load
+  lowReadiness: 55, freeDayReadiness: 65,
+  winter: [10, 11, 0, 1, 2, 3],  // Nov-Apr: running is on a treadmill, so it is kept low
+  runEveryDays: 10, treadmillMin: 25, outdoorRunMin: 35,
+  goals: {
+    improve:  { label: "Improve",  mult: 1.10, quality: true,    swimQ: 60, swimE: 50, addOn: [35, 45], tempo: true,  freeDay: true,  lift: "" },
+    maintain: { label: "Maintain", mult: 1.00, quality: "short", swimQ: 55, swimE: 45, addOn: [30, 40], tempo: false, freeDay: false, lift: "" },
+    recover:  { label: "Recover",  mult: 0.70, quality: false,   swimQ: 40, swimE: 40, addOn: [20, 30], tempo: false, freeDay: false, lift: "Keep it lighter: stop about 3 reps before failure." },
+  },
+  text: {
+    improve: "Build fitness: a little more cardio than usual, one hard swim, and extra aerobic work after lifting and climbing.",
+    maintain: "Hold your level: your usual load, mostly easy sessions and no extra hard work.",
+    recover: "Ease off: about 70% of your usual load, every session easy and extra cardio optional.",
+  },
+  kinds: {
+    "lift-upper": { label: "Upper lift", color: "--act-strength", icon: "🏋️" },
+    "lift-lower": { label: "Lower lift", color: "--act-strength", icon: "🏋️" },
+    swim: { label: "Swim", color: "--act-swim", icon: "🏊" },
+    climb: { label: "Rock climbing", color: "--act-climb", icon: "🧗" },
+    bike: { label: "Bike", color: "--act-bike", icon: "🚴" },
+    run: { label: "Treadmill run", color: "--act-run", icon: "🏃" },
+  },
+};
+// Which Garmin activities count as each planned session (climbing isn't on Garmin: you tick it).
+const SCH_MATCH = {
+  "lift-upper": (a) => isStrength(a), "lift-lower": (a) => isStrength(a),
+  swim: (a) => isSwim(a), bike: (a) => /cycl|bik/.test(a.type), run: (a) => isRealRun(a), climb: () => false,
+};
+const actColorVar = (type) => /swim/.test(type) ? "--act-swim" : /run/.test(type) ? "--act-run" : /cycl|bik|ride/.test(type) ? "--act-bike"
+  : type === "strength_training" ? "--act-strength" : /walk|hik/.test(type) ? "--act-walk" : /climb/.test(type) ? "--act-climb" : null;
+
+function schedState() {
+  let saved = null;
+  try { saved = JSON.parse(store.get(SCH.key) || "null"); } catch { saved = null; }
+  const st = { goal: "improve", moves: {}, done: {}, skip: {}, ...(saved || {}) };
+  if (!SCH.goals[st.goal]) st.goal = "improve";
+  const cutoff = addDays(localToday(), -14);
+  [st.moves, st.done, st.skip].forEach((o) => Object.keys(o).forEach((k) => { if (k.slice(0, 10) < cutoff) delete o[k]; }));
+  return st;
+}
+const schedSave = (st) => store.set(SCH.key, JSON.stringify(st));
+const baseKinds = (date, st) => (st.moves[date] ? [...st.moves[date]] : [...(SCH.skeleton[dayDate(date).getUTCDay()] || [])]);
+
+// Your own load per minute (from your history) for turning a planned session into an expected load.
+function loadPerMin(kind, hard) {
+  const pick = { swim: SCH_MATCH.swim, bike: SCH_MATCH.bike, run: SCH_MATCH.run }[kind];
+  const fallback = { swim: [1.3, 2.2], bike: [1.3, 1.8], run: [1.3, 3.0] }[kind];
+  const rates = DATA.activities.filter((a) => pick(a) && a.activityTrainingLoad > 0 && actTime(a) > 600)
+    .filter((a) => ((a.aerobicTrainingEffect || 0) >= 3) === hard).map((a) => a.activityTrainingLoad / (actTime(a) / 60));
+  return rates.length >= 3 ? median(rates) : fallback[hard ? 1 : 0];
+}
+
+function doneFor(date, kind, st) {
+  if (kind === "climb") return st.done[`${date}:climb`] ? { manual: true } : null;
+  const a = DATA.activities.find((x) => actDate(x) === date && SCH_MATCH[kind](x));
+  return a ? { minutes: Math.round(actTime(a) / 60), load: a.activityTrainingLoad || 0, name: a.activityName || humanize(a.type) } : null;
+}
+
+function zoneText(n) { // heart-rate range of zone n (from your Garmin zones)
+  const z = (DATA.hrZones || []).find((x) => x.sport === "RUNNING") || (DATA.hrZones || [])[0];
+  if (!z) return "";
+  const lo = z[`zone${n}Floor`], hi = n < 5 ? z[`zone${n + 1}Floor`] - 1 : z.maxHeartRateUsed;
+  return nz(lo) && nz(hi) ? ` (${lo}–${hi} bpm)` : "";
+}
+
+const SWIM_SETS = [
+  "6 × 200 m at a hard, steady effort with 20 s rest",
+  "10 × 100 m fast with 15 s rest",
+  "4 × 400 m at threshold effort with 30 s rest",
+  "3 rounds of 4 × 50 m fast + 200 m easy",
+];
+
+function describe(it, G, weekNo) {
+  if (it.kind === "swim") {
+    if (it.role === "quality") return `Quality swim: 400 m warm-up, ${SWIM_SETS[weekNo % SWIM_SETS.length]}, easy cool-down. Hard efforts, easy in between.`;
+    if (it.role === "steady") return "Steady swim with one short quality block: 4 × 100 m a little faster than usual, the rest comfortable.";
+    return it.after ? "Easy aerobic swim after lifting: steady laps, comfortable effort, focus on technique. No sprints with tired legs." : "Easy aerobic swim: steady laps at a comfortable effort, 100–200 m repeats, focus on technique.";
+  }
+  if (it.kind === "bike") return it.role === "tempo" ? `Tempo bike: 10 min easy, 3 × 8 min comfortably hard (zone 3–4${zoneText(3)}), 5 min easy between, then easy to finish.` : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
+  if (it.kind === "run") return `Easy treadmill run in zone 2${zoneText(2)}, conversational pace. Short and easy to keep treadmill mileage low.`;
+  if (it.kind === "climb") return "Rock climbing. Garmin doesn't record it, so tick it off yourself when it's done.";
+  return G.lift || "";
+}
+
+function buildSchedule(opts = {}) {
+  const st = opts.state || schedState(), today = opts.today || localToday();
+  const goal = opts.goal || st.goal, G = SCH.goals[goal];
+  const ts = trainingStatus(), rd = readiness();
+  const readyLow = rd.score !== null && rd.score < SCH.lowReadiness;
+  const days = [...Array(7)].map((_, i) => {
+    const date = addDays(today, i);
+    return { i, date, items: baseKinds(date, st).map((kind) => ({ kind, base: true })), notes: [], warnings: [] };
+  });
+  const has = (d, k) => d.items.some((x) => x.kind === k);
+  const prevLower = (d) => (d.i > 0 ? has(days[d.i - 1], "lift-lower") : baseKinds(addDays(d.date, -1), st).includes("lift-lower"));
+  const legsTired = (d) => has(d, "lift-lower") || prevLower(d);
+  const soon = (d) => d.i <= 1;
+  const weekNo = Math.floor(dayDate(mondayOf(today)) / 604800000);
+
+  // Swims: one quality swim a week, placed where the legs are fresh.
+  let qDate = null;
+  if (G.quality) { const c = days.find((d) => has(d, "swim") && !legsTired(d) && !(readyLow && soon(d))); qDate = c ? c.date : null; }
+  days.forEach((d) => d.items.forEach((it) => {
+    it.id = `${d.date}:${it.kind}`;
+    it.done = doneFor(d.date, it.kind, st);
+    it.skipped = !!st.skip[it.id];
+    if (it.kind === "swim") {
+      const q = d.date === qDate, short = G.quality === "short";
+      it.role = q ? (short ? "steady" : "quality") : "easy";
+      it.after = legsTired(d);
+      it.minutes = q ? G.swimQ : it.after ? G.swimE - 5 : G.swimE;
+      it.hard = q && !short;
+      const perMin = q ? (short ? (loadPerMin("swim", false) + loadPerMin("swim", true)) / 2 : loadPerMin("swim", true)) : loadPerMin("swim", false);
+      it.load = Math.round(it.minutes * perMin);
+    }
+    it.text = describe(it, G, weekNo);
+  }));
+
+  // Cardio target for the 7 days, kept close to what your body is used to.
+  const doneToday = DATA.activities.filter((a) => actDate(a) === today && !isStrength(a)).reduce((s, a) => s + (a.activityTrainingLoad || 0), 0);
+  let target = ts.chronic > 0 ? ts.chronic * G.mult : 250 * G.mult;
+  if (ts.chronic > 0) target = Math.min(target, Math.max(ts.load7, ts.chronic * 0.85) * SCH.maxRamp);
+  const adj = (readyLow ? 0.9 : 1) * (ts.ratio > 1.5 ? 0.85 : 1);
+  target *= adj;
+  // Never plan more than 15% above your 4-week average (recover: 5% above its target).
+  const ceiling = G.mult >= 1 ? (ts.chronic > 0 ? ts.chronic : 250) * 1.15 * adj : target * 1.05;
+  const counts = (it) => !it.done && !it.skipped && nz(it.load);
+  const total = () => doneToday + days.reduce((s, d) => s + d.items.filter(counts).reduce((x, it) => x + it.load, 0), 0);
+
+  // Extra cardio after upper lifts and climbing (30-45 min, never after lower lifts or on swim days).
+  const slots = days.filter((d) => (has(d, "lift-upper") || has(d, "climb")) && !has(d, "lift-lower") && !has(d, "swim"));
+  const qIdx = qDate ? days.find((d) => d.date === qDate).i : null;
+  let tempoDate = null;
+  if (G.tempo && !readyLow) {
+    const c = slots.filter((d) => (qIdx === null || Math.abs(d.i - qIdx) >= 2) && !prevLower(d))
+      .sort((a, b) => (qIdx === null ? 0 : Math.abs(b.i - qIdx) - Math.abs(a.i - qIdx)) || a.i - b.i);
+    tempoDate = c.length ? c[0].date : null;
+  }
+  const recentRun = DATA.activities.some((a) => SCH_MATCH.run(a) && (dayDate(today) - dayDate(actDate(a))) / 86400000 < SCH.runEveryDays && actDate(a) <= today);
+  const winter = SCH.winter.includes(dayDate(today).getUTCMonth());
+  let runPlanned = 0;
+  const bikeEasy = loadPerMin("bike", false);
+  const addOn = (d, kind, role, minutes, perMin, optional) => {
+    const it = { kind, base: false, role, minutes: Math.min(SCH.addOnMax, minutes), hard: role === "tempo", optional, perMin };
+    it.id = `${d.date}:${kind}`;
+    it.done = doneFor(d.date, kind, st);
+    it.skipped = !!st.skip[it.id];
+    it.load = Math.round(it.minutes * perMin);
+    it.text = describe(it, G, weekNo);
+    d.items.push(it);
+    return it;
+  };
+  const runCap = winter ? SCH.treadmillMin : SCH.outdoorRunMin;
+  // Pass 1: every eligible lift/climbing day gets a session at its shortest length, as long as the week stays under the ceiling.
+  slots.forEach((d) => {
+    if (readyLow && soon(d)) { d.notes.push("Readiness is low, so no extra cardio today."); return; }
+    const isTempo = d.date === tempoDate, lo = G.addOn[0];
+    const runOk = G.mult >= 1 && !readyLow && !isTempo && runPlanned === 0 && !recentRun && !legsTired(d); // keeps treadmill running low
+    const kind = runOk ? "run" : "bike", perMin = runOk ? loadPerMin("run", false) : isTempo ? loadPerMin("bike", true) : bikeEasy;
+    const minutes = runOk ? Math.min(lo, runCap) : lo;
+    if (total() + minutes * perMin > ceiling) { d.notes.push("An extra session here would push this week's load too high."); return; }
+    if (runOk) runPlanned++;
+    addOn(d, kind, kind === "run" ? "easy" : isTempo ? "tempo" : "easy", minutes, perMin, G.addOn[0] < 30);
+  });
+  // Pass 2: lengthen those sessions (never above 45 min or the ceiling) while the week is short of its target.
+  for (let grew = true; grew && total() < target;) {
+    grew = false;
+    for (const d of days) for (const it of d.items) {
+      if (it.base || it.skipped || it.done || total() >= target) continue;
+      const cap = Math.min(G.addOn[1], SCH.addOnMax, it.kind === "run" ? runCap : SCH.addOnMax);
+      if (it.minutes + 5 > cap || total() + 5 * it.perMin > ceiling) continue;
+      it.minutes += 5; it.load = Math.round(it.minutes * it.perMin); grew = true;
+    }
+  }
+  // A free day gets an optional easy session only when the week is still clearly short of its target.
+  if (G.freeDay && (rd.score === null || rd.score >= SCH.freeDayReadiness)) {
+    const fd = days.find((d) => d.items.length === 0 && !(soon(d) && readyLow));
+    const gap = target - total();
+    const minutes = Math.max(30, Math.min(45, Math.round(gap / bikeEasy / 5) * 5));
+    if (fd && gap > target * 0.12 && total() + minutes * bikeEasy <= ceiling) addOn(fd, "bike", "easy", minutes, bikeEasy, true);
+  }
+  days.forEach((d) => {
+    if (d.items.length === 0 && !d.notes.length) d.notes.push("Rest day.");
+    d.items.filter((it) => it.kind.startsWith("lift")).forEach((it) => {
+      it.text = `${it.kind === "lift-upper" ? "Upper body" : "Lower body"} lift. ${G.lift || (it.kind === "lift-lower" ? "Keep the swim easy afterwards." : "")}`.trim();
+    });
+  });
+
+  // Warnings for the current layout (never blocking).
+  const warnings = [];
+  const hardOn = (d) => d.items.some((x) => x.hard && !x.skipped);
+  days.forEach((d, i) => {
+    const next = days[i + 1];
+    if (next && hardOn(d) && hardOn(next)) warnings.push({ date: d.date, text: `Two hard sessions in a row (${fmtDay(d.date)} and ${fmtDay(next.date)}). Leave a day between them.` });
+    if (next && has(d, "lift-lower") && next.items.some((x) => x.role === "quality")) warnings.push({ date: d.date, text: `Lower lift the day before the quality swim (${fmtDay(d.date)}): your legs may be tired for it.` });
+    if (has(d, "lift-upper") && has(d, "climb")) warnings.push({ date: d.date, text: `Upper lift and climbing on the same day (${fmtDay(d.date)}) is a lot for your arms and back.` });
+    if (next && ((has(d, "lift-upper") && has(next, "climb")) || (has(d, "climb") && has(next, "lift-upper")))) warnings.push({ date: d.date, text: `Upper lift and climbing on back-to-back days (${fmtDay(d.date)}, ${fmtDay(next.date)}): your arms and back get little recovery.` });
+  });
+  if (days.every((d) => d.items.some((x) => x.base))) warnings.push({ date: today, text: "No rest day in the next 7 days." });
+
+  const planned = Math.round(total());
+  const minutes = days.reduce((s, d) => s + d.items.filter((it) => !it.skipped && it.minutes).reduce((x, it) => x + it.minutes, 0), 0);
+  const why = [`${G.label}: about ${planned} cardio load planned against a target of ${Math.round(target)} (your 4-week average is ${Math.round(ts.chronic)}).`];
+  if (readyLow) why.push("Readiness is low, so the next two days stay easy.");
+  if (ts.ratio > 1.5) why.push("Recent load is high, so the plan eases off.");
+  if (ts.ratio !== null && ts.ratio < 0.8) why.push("Recent load is low, so the plan builds back gradually.");
+  return { goal, G, days, target: Math.round(target), ceiling: Math.round(ceiling), planned, minutes, warnings, why: why.join(" "), ts, rd, readyLow, qDate, today };
+}
+
+function suggestGoal(ts, rd) {
+  if ((rd.score !== null && rd.score < SCH.lowReadiness) || ts.key === "overreaching" || (ts.ratio !== null && ts.ratio > 1.5))
+    return { goal: "recover", reason: "Your readiness is low or recent load is high." };
+  if (ts.key === "unproductive") return { goal: "maintain", reason: "Your fitness signals are slipping at normal load, so hold steady and recover well before pushing." };
+  if (ts.key === "detraining" || ts.key === "recovery") return { goal: "improve", reason: "Recent load is low and you're recovered, so it's time to build back." };
+  return { goal: "improve", reason: "Load and recovery both look good for building." };
+}
+
+// Last 7 days: what was planned vs what Garmin (or your ticks) shows.
+function scheduleAdherence(st, today) {
+  const out = [];
+  for (let k = 7; k >= 1; k--) {
+    const date = addDays(today, -k);
+    baseKinds(date, st).forEach((kind) => {
+      const id = `${date}:${kind}`, done = doneFor(date, kind, st);
+      out.push({ id, date, kind, done, status: done ? "done" : st.skip[id] ? "skipped" : "missed" });
+    });
+  }
+  return out;
+}
+
+function moveSession(from, kind, to) {
+  const st = schedState(), a = baseKinds(from, st), b = baseKinds(to, st), i = a.indexOf(kind);
+  if (i < 0 || from === to || b.includes(kind)) return false;
+  a.splice(i, 1); b.push(kind);
+  st.moves[from] = a; st.moves[to] = b;
+  if (st.done[`${from}:${kind}`]) { delete st.done[`${from}:${kind}`]; st.done[`${to}:${kind}`] = true; }
+  schedSave(st);
+  return true;
+}
+
+function openMoveSheet(date, kind) {
+  const st = schedState(), plan = buildSchedule({ state: st });
+  $("#sheet-title").textContent = `Move ${SCH.kinds[kind].label}`;
+  $("#sheet-body").innerHTML = `<p class="note">Pick the day to move it to. Extra cardio is re-planned around the new layout.</p>` + plan.days.map((d) => {
+    const cur = baseKinds(d.date, st), off = d.date === date || cur.includes(kind);
+    const label = cur.length ? cur.map((k) => SCH.kinds[k].label).join(" + ") : "Free";
+    return `<button class="move-day" data-to="${d.date}" ${off ? "disabled" : ""}><b>${esc(fmtDay(d.date))}${d.i === 0 ? " · Today" : ""}</b><br><span class="muted small">${esc(d.date === date ? "Where it is now" : label)}</span></button>`;
+  }).join("");
+  $("#sheet-body").querySelectorAll(".move-day").forEach((b) => b.addEventListener("click", () => { moveSession(date, kind, b.dataset.to); $("#sheet").hidden = true; render(); }));
+  $("#sheet").hidden = false;
+}
+
+function schedAction(d) {
+  const st = schedState();
+  if (d.sch === "goal") st.goal = d.goal;
+  else if (d.sch === "skip") { if (st.skip[d.id]) delete st.skip[d.id]; else st.skip[d.id] = true; }
+  else if (d.sch === "done") { if (st.done[d.id]) delete st.done[d.id]; else st.done[d.id] = true; }
+  else if (d.sch === "move") return openMoveSheet(d.date, d.kind);
+  else if (d.sch === "reset") { st.moves = {}; st.skip = {}; }
+  else if (d.sch === "catchup") { st.moves[d.to] = [...baseKinds(d.to, st), d.kind]; st.skip[d.id] = true; }
+  schedSave(st);
+  render();
+}
+
+function sessionHtml(it, date, isToday) {
+  const k = SCH.kinds[it.kind], title = it.kind === "swim" ? ({ quality: "Quality swim", steady: "Steady swim", easy: "Easy swim" }[it.role] || "Swim")
+    : it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label;
+  const chip = it.done ? `<span class="chip-status">✓ Done${it.done.minutes ? ` · ${it.done.minutes} min` : ""}</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
+  const acts = [];
+  if (it.kind === "climb") acts.push(`<button class="link-btn" data-sch="done" data-id="${esc(it.id)}">${it.done ? "Undo done" : "Mark done"}</button>`);
+  if (it.base) acts.push(`<button class="link-btn" data-sch="move" data-date="${date}" data-kind="${it.kind}">Move</button>`);
+  if (!it.done || it.kind !== "climb") acts.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
+  return `<div class="sess ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
+    <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}${it.minutes ? `<span class="sess-dur">${it.minutes} min</span>` : ""}</div>
+    ${it.text ? `<p class="sess-note">${esc(it.text)}</p>` : ""}
+    <div class="sess-actions">${acts.join("")}</div></div>`;
+}
+
+function renderSchedule(view) {
+  const st = schedState(), plan = buildSchedule({ state: st }), today = plan.today;
+  const sug = suggestGoal(plan.ts, plan.rd);
+  const seg = Object.entries(SCH.goals).map(([k, g]) => `<button class="seg-btn ${k === plan.goal ? "active" : ""}" data-sch="goal" data-goal="${k}" aria-pressed="${k === plan.goal}">${g.label}</button>`).join("");
+  section(view, `<div class="card-head"><h2>Training plan</h2></div>
+    <div class="seg" role="group" aria-label="Training goal">${seg}</div>
+    <p class="note">${esc(SCH.text[plan.goal])}</p>
+    <p class="note">Suggested right now: <b>${esc(SCH.goals[sug.goal].label)}</b>. ${esc(sug.reason)}</p>`);
+  section(view, [
+    tile("Planned cardio load", num(plan.planned), `target ${num(plan.target)} · 4-week average ${num(plan.ts.chronic)}`),
+    tile("Planned time", dur(plan.minutes * 60), "all sessions, next 7 days"),
+  ].join(""), "tiles");
+  if (plan.warnings.length) section(view, `<h2>Worth a look</h2>${plan.warnings.map((w) => `<p class="note">⚠️ ${esc(w.text)}</p>`).join("")}`);
+  plan.days.forEach((d) => {
+    const isToday = d.i === 0;
+    section(view, `<div class="card-head"><h2>${esc(fmtDay(d.date))}</h2><span class="muted small">${isToday ? "Today" : d.i === 1 ? "Tomorrow" : ""}</span></div>
+      ${d.items.map((it) => sessionHtml(it, d.date, isToday)).join("")}
+      ${d.notes.map((n) => `<p class="note">${esc(n)}</p>`).join("")}`, `card day${isToday ? " today" : ""}`);
+  });
+
+  // Last 7 days
+  const past = scheduleAdherence(st, today);
+  const free = plan.days.find((d) => baseKinds(d.date, st).length === 0);
+  const pastRows = past.map((p) => {
+    const k = SCH.kinds[p.kind], catchable = p.status === "missed" && (p.kind === "swim" || p.kind.startsWith("lift")) && free && (dayDate(today) - dayDate(p.date)) / 86400000 <= 3;
+    return `<div class="past-row" style="--c: var(${k.color})"><span class="past-dot"></span><span>${esc(fmtDay(p.date))} · ${esc(k.label)}</span>
+      <span class="chip-status ${p.status}">${p.status === "done" ? "✓ Done" + (p.done.minutes ? ` · ${p.done.minutes} min` : "") : p.status === "skipped" ? "Skipped" : "Missed"}</span>
+      ${p.status === "missed" ? `<button class="link-btn" data-sch="skip" data-id="${esc(p.id)}">Skip</button>${p.kind === "climb" ? `<button class="link-btn" data-sch="done" data-id="${esc(p.id)}">Mark done</button>` : ""}${catchable ? `<button class="link-btn" data-sch="catchup" data-id="${esc(p.id)}" data-kind="${p.kind}" data-to="${free.date}">Add on ${esc(fmtDay(free.date, { weekday: "short" }))}</button>` : ""}` : ""}</div>`;
+  }).join("");
+  const missed = past.filter((p) => p.status === "missed").length, doneN = past.filter((p) => p.status === "done").length;
+  section(view, `<div class="card-head"><h2>Last 7 days</h2><span class="muted small">${doneN} done${missed ? ` · ${missed} missed` : ""}</span></div>${pastRows || `<p class="empty">Nothing planned.</p>`}
+    <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself.</p>`);
+
+  section(view, `<details><summary>How the plan is made</summary>
+    <p class="note">${esc(plan.why)}</p>
+    <p class="note">Your fixed week is kept. Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Mostly easy zone 2 on the bike, with one tempo session a week when improving. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days.</p>
+    <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. Tuesday's swim is easy (after lifting); the quality swim goes where your legs are fresh.</p>
+    <p class="note">Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
+    <p class="note"><button class="link-btn" data-sch="reset">Reset to the standard week</button></p></details>`);
+  view.querySelectorAll("[data-sch]").forEach((el) => el.addEventListener("click", () => schedAction(el.dataset)));
 }
 
 /* ---------- Charts (SVG) ---------- */
@@ -1249,7 +1579,7 @@ function actSummary(a) {
 function actItem(a) {
   const when = `${fmtDay(a.startTimeLocal.slice(0, 10))} · ${clockStr(a.startTimeLocal)}`;
   return `<button class="act" data-act="${a.activityId}">
-    <span class="act-icon" aria-hidden="true">${ACT_ICON[a.type] || "⏱️"}</span>
+    <span class="act-icon" style="--c: var(${actColorVar(a.type) || "--accent"})" aria-hidden="true">${ACT_ICON[a.type] || "⏱️"}</span>
     <span><span class="act-name">${esc(a.activityName || humanize(a.type))}</span>
     <span class="act-meta"> · ${esc(humanize(a.type))}</span>
     <div class="act-meta">${esc(when)}${a.locationName ? " · " + esc(a.locationName) : ""}</div>
@@ -1388,7 +1718,7 @@ document.addEventListener("click", (e) => { const b = e.target.closest("[data-ac
 
 /* ---------- Views ---------- */
 
-const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", trends: "Fitness", strength: "Strength" };
+const TITLES = { today: "Today", sleep: "Sleep", activities: "Activities", schedule: "Schedule", trends: "Fitness", strength: "Strength" };
 
 function showUpdated() {
   const age = (Date.now() - new Date(DATA.generatedAt)) / 3600000;
@@ -1407,7 +1737,7 @@ function render() {
     + (DATA.demo ? `<div class="banner">Preview: the lifting data is made up to show how Hevy would look. Your Garmin data is real and unchanged.</div>` : "");
   const view = $("#view");
   view.innerHTML = "";
-  ({ today: renderToday, sleep: renderSleep, activities: renderActivities, trends: renderTrends, strength: renderStrength })[state.tab](view);
+  ({ today: renderToday, sleep: renderSleep, activities: renderActivities, schedule: renderSchedule, trends: renderTrends, strength: renderStrength })[state.tab](view);
   window.scrollTo(0, 0);
 }
 
