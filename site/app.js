@@ -1046,14 +1046,16 @@ const SCH = {
   winter: [10, 11, 0, 1, 2, 3],  // Nov-Apr: running is on a treadmill, so it is kept low
   runEveryDays: 10, treadmillMin: 25, outdoorRunMin: 35,
   goals: {
-    improve:  { label: "Improve",  mult: 1.10, quality: true,    swimQ: 60, swimE: 50, addOn: [35, 45], tempo: true,  freeDay: true,  lift: "" },
-    maintain: { label: "Maintain", mult: 1.00, quality: "short", swimQ: 55, swimE: 45, addOn: [30, 40], tempo: false, freeDay: false, lift: "" },
-    recover:  { label: "Recover",  mult: 0.70, quality: false,   swimQ: 40, swimE: 40, addOn: [20, 30], tempo: false, freeDay: false, lift: "Keep it lighter: stop about 3 reps before failure." },
+    improve:  { label: "Improve",  mult: 1.10, addOn: [35, 45], tempo: true,  freeDay: true,  lift: "" },
+    maintain: { label: "Maintain", mult: 1.00, addOn: [30, 40], tempo: false, freeDay: false, lift: "" },
+    recover:  { label: "Recover",  mult: 0.70, addOn: [20, 30], tempo: false, freeDay: false, lift: "Keep it lighter: stop about 3 reps before failure." },
   },
+  // How long each session takes (minutes). Swims are your team sessions; bike and run are chosen when you add them.
+  minutes: { "lift-upper": 60, "lift-lower": 60, climb: 105, swim: 60, bike: 45, run: 30 },
   text: {
-    improve: "Build fitness: a little more cardio than usual, one hard swim, and extra aerobic work after lifting and climbing.",
-    maintain: "Hold your level: your usual load, mostly easy sessions and no extra hard work.",
-    recover: "Ease off: about 70% of your usual load, every session easy and extra cardio optional.",
+    improve: "Build fitness: a little more cardio than usual, with extra aerobic work after lifting and climbing and one tempo bike.",
+    maintain: "Hold your level: your usual load, with easy extra cardio after lifting and climbing and no extra hard work.",
+    recover: "Ease off: about 70% of your usual load, with short optional easy cardio and lighter lifts.",
   },
   kinds: {
     "lift-upper": { label: "Upper lift", color: "--act-strength", icon: "🏋️" },
@@ -1061,7 +1063,7 @@ const SCH = {
     swim: { label: "Swim", color: "--act-swim", icon: "🏊" },
     climb: { label: "Rock climbing", color: "--act-climb", icon: "🧗" },
     bike: { label: "Bike", color: "--act-bike", icon: "🚴" },
-    run: { label: "Treadmill run", color: "--act-run", icon: "🏃" },
+    run: { label: "Run", color: "--act-run", icon: "🏃" },
   },
 };
 // Which Garmin activities count as each planned session (climbing isn't on Garmin: you tick it).
@@ -1075,10 +1077,10 @@ const actColorVar = (type) => /swim/.test(type) ? "--act-swim" : /run/.test(type
 function schedState() {
   let saved = null;
   try { saved = JSON.parse(store.get(SCH.key) || "null"); } catch { saved = null; }
-  const st = { goal: "improve", moves: {}, done: {}, skip: {}, ...(saved || {}) };
+  const st = { goal: "improve", moves: {}, done: {}, skip: {}, custom: {}, ...(saved || {}) };
   if (!SCH.goals[st.goal]) st.goal = "improve";
   const cutoff = addDays(localToday(), -14);
-  [st.moves, st.done, st.skip].forEach((o) => Object.keys(o).forEach((k) => { if (k.slice(0, 10) < cutoff) delete o[k]; }));
+  [st.moves, st.done, st.skip, st.custom].forEach((o) => Object.keys(o).forEach((k) => { if (k.slice(0, 10) < cutoff) delete o[k]; }));
   return st;
 }
 const schedSave = (st) => store.set(SCH.key, JSON.stringify(st));
@@ -1106,21 +1108,10 @@ function zoneText(n) { // heart-rate range of zone n (from your Garmin zones)
   return nz(lo) && nz(hi) ? ` (${lo}–${hi} bpm)` : "";
 }
 
-const SWIM_SETS = [
-  "6 × 200 m at a hard, steady effort with 20 s rest",
-  "10 × 100 m fast with 15 s rest",
-  "4 × 400 m at threshold effort with 30 s rest",
-  "3 rounds of 4 × 50 m fast + 200 m easy",
-];
-
 function describe(it, G, weekNo) {
-  if (it.kind === "swim") {
-    if (it.role === "quality") return `Quality swim: 400 m warm-up, ${SWIM_SETS[weekNo % SWIM_SETS.length]}, easy cool-down. Hard efforts, easy in between.`;
-    if (it.role === "steady") return "Steady swim with one short quality block: 4 × 100 m a little faster than usual, the rest comfortable.";
-    return it.after ? "Easy aerobic swim after lifting: steady laps, comfortable effort, focus on technique. No sprints with tired legs." : "Easy aerobic swim: steady laps at a comfortable effort, 100–200 m repeats, focus on technique.";
-  }
+  if (it.kind === "swim") return ""; // team session: the coach sets it
   if (it.kind === "bike") return it.role === "tempo" ? `Tempo bike: 10 min easy, 3 × 8 min comfortably hard (zone 3–4${zoneText(3)}), 5 min easy between, then easy to finish.` : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
-  if (it.kind === "run") return `Easy treadmill run in zone 2${zoneText(2)}, conversational pace. Short and easy to keep treadmill mileage low.`;
+  if (it.kind === "run") return `Easy run in zone 2${zoneText(2)}, conversational pace.${it.base ? "" : " Short and easy to keep treadmill mileage low."}`;
   if (it.kind === "climb") return "Rock climbing. Garmin doesn't record it, so tick it off yourself when it's done.";
   return G.lift || "";
 }
@@ -1140,21 +1131,24 @@ function buildSchedule(opts = {}) {
   const soon = (d) => d.i <= 1;
   const weekNo = Math.floor(dayDate(mondayOf(today)) / 604800000);
 
-  // Swims: one quality swim a week, placed where the legs are fresh.
-  let qDate = null;
-  if (G.quality) { const c = days.find((d) => has(d, "swim") && !legsTired(d) && !(readyLow && soon(d))); qDate = c ? c.date : null; }
+  // Swims are team sessions. Behind the scenes the swim where the legs are fresh (Thursday) counts as the hard one, the other as easy.
+  const hardSwim = days.find((d) => has(d, "swim") && !legsTired(d));
+  const qDate = hardSwim ? hardSwim.date : null;
   days.forEach((d) => d.items.forEach((it) => {
     it.id = `${d.date}:${it.kind}`;
     it.done = doneFor(d.date, it.kind, st);
     it.skipped = !!st.skip[it.id];
+    it.minutes = (st.custom || {})[it.id] || SCH.minutes[it.kind];
     if (it.kind === "swim") {
-      const q = d.date === qDate, short = G.quality === "short";
-      it.role = q ? (short ? "steady" : "quality") : "easy";
+      const q = d.date === qDate;
+      it.role = q ? "quality" : "easy";
       it.after = legsTired(d);
-      it.minutes = q ? G.swimQ : it.after ? G.swimE - 5 : G.swimE;
-      it.hard = q && !short;
-      const perMin = q ? (short ? (loadPerMin("swim", false) + loadPerMin("swim", true)) / 2 : loadPerMin("swim", true)) : loadPerMin("swim", false);
-      it.load = Math.round(it.minutes * perMin);
+      it.hard = q;
+      it.load = Math.round(it.minutes * loadPerMin("swim", q));
+    } else if (it.kind === "bike" || it.kind === "run") { // sessions you added yourself
+      it.role = "easy";
+      it.perMin = loadPerMin(it.kind, false);
+      it.load = Math.round(it.minutes * it.perMin);
     }
     it.text = describe(it, G, weekNo);
   }));
@@ -1171,7 +1165,7 @@ function buildSchedule(opts = {}) {
   const total = () => doneToday + days.reduce((s, d) => s + d.items.filter(counts).reduce((x, it) => x + it.load, 0), 0);
 
   // Extra cardio after upper lifts and climbing (30-45 min, never after lower lifts or on swim days).
-  const slots = days.filter((d) => (has(d, "lift-upper") || has(d, "climb")) && !has(d, "lift-lower") && !has(d, "swim"));
+  const slots = days.filter((d) => (has(d, "lift-upper") || has(d, "climb")) && !has(d, "lift-lower") && !has(d, "swim") && !has(d, "bike") && !has(d, "run"));
   const qIdx = qDate ? days.find((d) => d.date === qDate).i : null;
   let tempoDate = null;
   if (G.tempo && !readyLow) {
@@ -1181,7 +1175,7 @@ function buildSchedule(opts = {}) {
   }
   const recentRun = DATA.activities.some((a) => SCH_MATCH.run(a) && (dayDate(today) - dayDate(actDate(a))) / 86400000 < SCH.runEveryDays && actDate(a) <= today);
   const winter = SCH.winter.includes(dayDate(today).getUTCMonth());
-  let runPlanned = 0;
+  let runPlanned = days.filter((d) => has(d, "run")).length;
   const bikeEasy = loadPerMin("bike", false);
   const addOn = (d, kind, role, minutes, perMin, optional) => {
     const it = { kind, base: false, role, minutes: Math.min(SCH.addOnMax, minutes), hard: role === "tempo", optional, perMin };
@@ -1235,7 +1229,7 @@ function buildSchedule(opts = {}) {
   days.forEach((d, i) => {
     const next = days[i + 1];
     if (next && hardOn(d) && hardOn(next)) warnings.push({ date: d.date, text: `Two hard sessions in a row (${fmtDay(d.date)} and ${fmtDay(next.date)}). Leave a day between them.` });
-    if (next && has(d, "lift-lower") && next.items.some((x) => x.role === "quality")) warnings.push({ date: d.date, text: `Lower lift the day before the quality swim (${fmtDay(d.date)}): your legs may be tired for it.` });
+    if (next && has(d, "lift-lower") && next.items.some((x) => x.role === "quality")) warnings.push({ date: d.date, text: `Lower lift the day before your harder swim (${fmtDay(d.date)} to ${fmtDay(next.date)}): your legs may be tired for it.` });
     if (has(d, "lift-upper") && has(d, "climb")) warnings.push({ date: d.date, text: `Upper lift and climbing on the same day (${fmtDay(d.date)}) is a lot for your arms and back.` });
     if (next && ((has(d, "lift-upper") && has(next, "climb")) || (has(d, "climb") && has(next, "lift-upper")))) warnings.push({ date: d.date, text: `Upper lift and climbing on back-to-back days (${fmtDay(d.date)}, ${fmtDay(next.date)}): your arms and back get little recovery.` });
   });
@@ -1276,9 +1270,49 @@ function moveSession(from, kind, to) {
   if (i < 0 || from === to || b.includes(kind)) return false;
   a.splice(i, 1); b.push(kind);
   st.moves[from] = a; st.moves[to] = b;
-  if (st.done[`${from}:${kind}`]) { delete st.done[`${from}:${kind}`]; st.done[`${to}:${kind}`] = true; }
+  for (const bag of [st.done, st.custom]) if (bag[`${from}:${kind}`] !== undefined) { bag[`${to}:${kind}`] = bag[`${from}:${kind}`]; delete bag[`${from}:${kind}`]; }
   schedSave(st);
   return true;
+}
+
+function addSession(date, kind, minutes) {
+  const st = schedState(), list = baseKinds(date, st);
+  if (list.includes(kind)) return false;
+  list.push(kind);
+  st.moves[date] = list;
+  if (minutes) st.custom[`${date}:${kind}`] = minutes;
+  schedSave(st);
+  return true;
+}
+
+function removeSession(date, kind) {
+  const st = schedState(), list = baseKinds(date, st), i = list.indexOf(kind);
+  if (i < 0) return false;
+  list.splice(i, 1);
+  st.moves[date] = list;
+  for (const bag of [st.done, st.skip, st.custom]) delete bag[`${date}:${kind}`];
+  schedSave(st);
+  return true;
+}
+
+// Add any session to a day. Bike and run ask how long.
+function openAddSheet(date, pickKind) {
+  const st = schedState(), cur = baseKinds(date, st);
+  $("#sheet-title").textContent = pickKind ? `${SCH.kinds[pickKind].label}: how long?` : `Add a session · ${fmtDay(date)}`;
+  const finish = (kind, minutes) => { addSession(date, kind, minutes); $("#sheet").hidden = true; render(); };
+  if (pickKind) {
+    $("#sheet-body").innerHTML = [30, 45, 60, 90].map((m) => `<button class="move-day" data-min="${m}"><b>${m} min</b></button>`).join("");
+    $("#sheet-body").querySelectorAll("[data-min]").forEach((b) => b.addEventListener("click", () => finish(pickKind, +b.dataset.min)));
+  } else {
+    $("#sheet-body").innerHTML = Object.entries(SCH.kinds).map(([k, v]) => {
+      const mins = k === "bike" || k === "run" ? "you choose" : `${SCH.minutes[k]} min`;
+      return `<button class="move-day add-kind" style="--c: var(${v.color})" data-kind="${k}" ${cur.includes(k) ? "disabled" : ""}><b>${v.icon} ${esc(v.label)}</b><br><span class="muted small">${cur.includes(k) ? "Already on this day" : mins}</span></button>`;
+    }).join("");
+    $("#sheet-body").querySelectorAll(".add-kind").forEach((b) => b.addEventListener("click", () => {
+      if (b.dataset.kind === "bike" || b.dataset.kind === "run") openAddSheet(date, b.dataset.kind); else finish(b.dataset.kind);
+    }));
+  }
+  $("#sheet").hidden = false;
 }
 
 function openMoveSheet(date, kind) {
@@ -1299,20 +1333,23 @@ function schedAction(d) {
   else if (d.sch === "skip") { if (st.skip[d.id]) delete st.skip[d.id]; else st.skip[d.id] = true; }
   else if (d.sch === "done") { if (st.done[d.id]) delete st.done[d.id]; else st.done[d.id] = true; }
   else if (d.sch === "move") return openMoveSheet(d.date, d.kind);
-  else if (d.sch === "reset") { st.moves = {}; st.skip = {}; }
+  else if (d.sch === "add") return openAddSheet(d.date);
+  else if (d.sch === "remove") { removeSession(d.date, d.kind); return render(); }
+  else if (d.sch === "reset") { st.moves = {}; st.skip = {}; st.custom = {}; }
   else if (d.sch === "catchup") { st.moves[d.to] = [...baseKinds(d.to, st), d.kind]; st.skip[d.id] = true; }
   schedSave(st);
   render();
 }
 
 function sessionHtml(it, date, isToday) {
-  const k = SCH.kinds[it.kind], title = it.kind === "swim" ? ({ quality: "Quality swim", steady: "Steady swim", easy: "Easy swim" }[it.role] || "Swim")
-    : it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label;
+  const k = SCH.kinds[it.kind], title = it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label;
   const chip = it.done ? `<span class="chip-status">✓ Done${it.done.minutes ? ` · ${it.done.minutes} min` : ""}</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
   const acts = [];
   if (it.kind === "climb") acts.push(`<button class="link-btn" data-sch="done" data-id="${esc(it.id)}">${it.done ? "Undo done" : "Mark done"}</button>`);
-  if (it.base) acts.push(`<button class="link-btn" data-sch="move" data-date="${date}" data-kind="${it.kind}">Move</button>`);
-  if (!it.done || it.kind !== "climb") acts.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
+  if (it.base) {
+    acts.push(`<button class="link-btn" data-sch="move" data-date="${date}" data-kind="${it.kind}">Move</button>`);
+    acts.push(`<button class="link-btn" data-sch="remove" data-date="${date}" data-kind="${it.kind}">Remove</button>`);
+  } else acts.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
   return `<div class="sess ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
     <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}${it.minutes ? `<span class="sess-dur">${it.minutes} min</span>` : ""}</div>
     ${it.text ? `<p class="sess-note">${esc(it.text)}</p>` : ""}
@@ -1336,7 +1373,8 @@ function renderSchedule(view) {
     const isToday = d.i === 0;
     section(view, `<div class="card-head"><h2>${esc(fmtDay(d.date))}</h2><span class="muted small">${isToday ? "Today" : d.i === 1 ? "Tomorrow" : ""}</span></div>
       ${d.items.map((it) => sessionHtml(it, d.date, isToday)).join("")}
-      ${d.notes.map((n) => `<p class="note">${esc(n)}</p>`).join("")}`, `card day${isToday ? " today" : ""}`);
+      ${d.notes.map((n) => `<p class="note">${esc(n)}</p>`).join("")}
+      <p class="add-row"><button class="link-btn" data-sch="add" data-date="${d.date}">＋ Add session</button></p>`, `card day${isToday ? " today" : ""}`);
   });
 
   // Last 7 days
@@ -1354,8 +1392,8 @@ function renderSchedule(view) {
 
   section(view, `<details><summary>How the plan is made</summary>
     <p class="note">${esc(plan.why)}</p>
-    <p class="note">Your fixed week is kept. Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Mostly easy zone 2 on the bike, with one tempo session a week when improving. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days.</p>
-    <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. Tuesday's swim is easy (after lifting); the quality swim goes where your legs are fresh.</p>
+    <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Mostly easy zone 2 on the bike, with one tempo session a week when improving. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. You can add any session to any day.</p>
+    <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. For load, the swim where your legs are fresh (Thursday) counts as the harder one and Tuesday's as easier.</p>
     <p class="note">Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
     <p class="note"><button class="link-btn" data-sch="reset">Reset to the standard week</button></p></details>`);
   view.querySelectorAll("[data-sch]").forEach((el) => el.addEventListener("click", () => schedAction(el.dataset)));

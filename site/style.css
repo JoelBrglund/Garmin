@@ -258,3 +258,6 @@ details summary { cursor: pointer; color: var(--accent); font-size: 13.5px; marg
 .past-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--c, var(--accent)); flex: none; }
 .move-day { display: block; width: 100%; text-align: left; padding: 10px 12px; margin-top: 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font-size: 15px; }
 .move-day:disabled { opacity: 0.4; cursor: default; }
+
+.add-row { margin: 10px 0 0; }
+.add-kind { border-left: 5px solid var(--c, var(--accent)); }
