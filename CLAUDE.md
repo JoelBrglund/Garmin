@@ -69,6 +69,7 @@ Then open http://localhost:8000. (The browser only allows decryption on `localho
 - **Change the passphrase:** update the `DASHBOARD_PASSPHRASE` secret, then Actions → Update dashboard → Run workflow. Use 5–6 random words.
 - **Garmin key expired** (dashboard says "not updating", workflow fails): create a new key in Garmin Connect settings, update the `GARMIN_PERSONAL_API_KEY` secret and `../Garmin API.env`, re-run the workflow.
 - **Set up or renew the refresh key** (the refresh button says the key has expired): GitHub → Settings → Developer settings → Fine-grained tokens → Generate new token. Repository access: only `JoelBrglund/Garmin`. Permissions: **Actions: Read and write**, nothing else. Longest expiry allowed. Save it as the repository secret `DASHBOARD_REFRESH_TOKEN`, then Actions → Update dashboard → Run workflow.
+- **Today's data missing / dashboard shows yesterday:** Garmin only has data the watch has synced to Garmin Connect (check with the newest heart-rate sample from `get_daily_heart_rate`). If the watch hasn't synced, open the Garmin Connect app on the phone, then press refresh. The Today tab shows a notice in that case, and opens on the latest day that has data (`latestDate()`).
 - GitHub pauses scheduled workflows after 60 days without repo activity; pressing Run workflow re-enables it.
 
 ## Secrets and data

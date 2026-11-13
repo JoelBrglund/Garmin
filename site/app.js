@@ -1375,6 +1375,7 @@ function render() {
   showUpdated();
   $("#warnings").innerHTML = ((DATA.errors || []).length
     ? `<div class="banner">Some data couldn't be loaded on the last update: ${DATA.errors.map((e) => esc(e.split(":")[0])).join(", ")}.</div>` : "")
+    + (state.tab === "today" && latestDate() < localToday() ? `<div class="banner">Garmin hasn't received today's data from your watch yet, so this shows ${esc(relDay(latestDate()) === "Yesterday" ? "yesterday" : fmtDay(latestDate()))}'s data. Open the Garmin Connect app on your phone to sync the watch, then press refresh.</div>` : "")
     + (DATA.demo ? `<div class="banner">Preview: the lifting data is made up to show how Hevy would look. Your Garmin data is real and unchanged.</div>` : "");
   const view = $("#view");
   view.innerHTML = "";
