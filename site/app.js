@@ -1063,6 +1063,9 @@ const SCH = {
   maxRamp: 1.15,                 // never plan more than +15% over last week's load
   lowReadiness: 55, freeDayReadiness: 65,
   winter: [10, 11, 0, 1, 2, 3],  // Nov-Apr: running is on a treadmill, so it is kept low
+  deload: { after: 3, minShare: 0.85, mult: 0.7 }, // Improve: after 3 normal weeks in a row, the next one is easy (about 70% of target)
+  tempoLoad: [1, 1.1, 1.2, 1.3], // harder bike sessions load more per minute
+  hardBikeEvery: 2,              // completed hard bike sessions needed for each step up in bike intensity
   runEveryDays: 10, treadmillMin: 25, outdoorRunMin: 35,
   goals: {
     improve:  { label: "Improve",  mult: 1.10, addOn: [35, 45], tempo: true,  freeDay: true,  lift: "" },
@@ -1096,7 +1099,7 @@ const actColorVar = (type) => /swim/.test(type) ? "--act-swim" : /run/.test(type
 function schedState() {
   let saved = null;
   try { saved = JSON.parse(store.get(SCH.key) || "null"); } catch { saved = null; }
-  const st = { goal: "improve", moves: {}, done: {}, skip: {}, custom: {}, ...(saved || {}) };
+  const st = { goal: "improve", moves: {}, done: {}, skip: {}, custom: {}, improveSince: null, capSince: null, ...(saved || {}) };
   if (!SCH.goals[st.goal]) st.goal = "improve";
   const cutoff = addDays(localToday(), -14);
   [st.moves, st.done, st.skip, st.custom].forEach((o) => Object.keys(o).forEach((k) => { if (k.slice(0, 10) < cutoff) delete o[k]; }));
@@ -1127,9 +1130,38 @@ function zoneText(n) { // heart-rate range of zone n (from your Garmin zones)
   return nz(lo) && nz(hi) ? ` (${lo}–${hi} bpm)` : "";
 }
 
+// The weekly bike session. It stays a tempo session while the week's volume can still grow; once volume is maxed out
+// (45 min caps) it gets harder step by step instead, one step for every two hard bike sessions you complete.
+const TEMPO = [
+  { name: "Tempo bike", text: () => `6 min easy, 3 × 8 min comfortably hard (zone 3${zoneText(3)}), 3 min easy between, 5 min easy to finish.` },
+  { name: "Threshold bike", text: () => `6 min easy, 3 × 10 min hard but steady (zone 4${zoneText(4)}), 2 min easy between, 4 min easy to finish.` },
+  { name: "Bike intervals", text: () => `8 min easy, 5 × 4 min hard (zone 4–5${zoneText(4)}), 3 min easy between, 5 min easy to finish.` },
+  { name: "VO2 bike intervals", text: () => `8 min easy, 6 × 3 min very hard (zone 5${zoneText(5)}), 2–3 min easy between, 5 min easy to finish.` },
+];
+
+// Cardio load of the 4 weeks before today, newest week first.
+function cardioBlocks(today) {
+  const out = [0, 0, 0, 0];
+  DATA.activities.forEach((a) => {
+    if (isStrength(a)) return;
+    const age = (dayDate(today) - dayDate(actDate(a))) / 86400000;
+    if (age >= 1 && age <= 28) out[Math.ceil(age / 7) - 1] += a.activityTrainingLoad || 0;
+  });
+  return out;
+}
+// Easier week due: the last 3 weeks were all normal (at least 85% of your 4-week average), so the next one is a lighter one.
+function deloadDue(today, st) {
+  if (!st.improveSince || st.improveSince > addDays(today, -21)) return false; // counts from when Improve was chosen: three weeks of building first
+  if (!DATA.days.length || DATA.days[0].date > addDays(today, -28)) return false; // needs four weeks of data
+  const b = cardioBlocks(today), avg4 = b.reduce((x, y) => x + y, 0) / 4;
+  return avg4 > 0 && b.slice(0, SCH.deload.after).every((x) => x >= SCH.deload.minShare * avg4);
+}
+// Completed hard bike sessions (Garmin training effect 3+) from `since` until today.
+const hardBikesSince = (since, today) => DATA.activities.filter((a) => SCH_MATCH.bike(a) && (a.aerobicTrainingEffect || 0) >= 3 && actDate(a) >= since && actDate(a) <= today).length;
+
 function describe(it, G, weekNo) {
   if (it.kind === "swim") return ""; // team session: the coach sets it
-  if (it.kind === "bike") return it.role === "tempo" ? `Tempo bike: 10 min easy, 3 × 8 min comfortably hard (zone 3–4${zoneText(3)}), 5 min easy between, then easy to finish.` : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
+  if (it.kind === "bike") return it.role === "tempo" ? TEMPO[(it.level || 1) - 1].text() : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
   if (it.kind === "run") return `Easy run in zone 2${zoneText(2)}, conversational pace.${it.base ? "" : " Short and easy to keep treadmill mileage low."}`;
   if (it.kind === "climb") return "Rock climbing. Garmin doesn't record it, so tick it off yourself when it's done.";
   return G.lift || "";
@@ -1137,7 +1169,10 @@ function describe(it, G, weekNo) {
 
 function buildSchedule(opts = {}) {
   const st = opts.state || schedState(), today = opts.today || localToday();
-  const goal = opts.goal || st.goal, G = SCH.goals[goal];
+  const goal = opts.goal || st.goal, goalBase = SCH.goals[goal];
+  // Improve builds for three normal weeks, then the next week is easier (about 70% of target, lighter lifts, short optional cardio).
+  const deload = goal === "improve" && deloadDue(today, st);
+  const G = deload ? { ...goalBase, mult: SCH.deload.mult, addOn: SCH.goals.recover.addOn, tempo: false, freeDay: false, lift: SCH.goals.recover.lift } : goalBase;
   const ts = trainingStatus(), rd = readiness();
   const readyLow = rd.score !== null && rd.score < SCH.lowReadiness;
   const days = [...Array(7)].map((_, i) => {
@@ -1174,12 +1209,17 @@ function buildSchedule(opts = {}) {
 
   // Cardio target for the 7 days, kept close to what your body is used to.
   const doneToday = DATA.activities.filter((a) => actDate(a) === today && !isStrength(a)).reduce((s, a) => s + (a.activityTrainingLoad || 0), 0);
-  let target = ts.chronic > 0 ? ts.chronic * G.mult : 250 * G.mult;
-  if (ts.chronic > 0) target = Math.min(target, Math.max(ts.load7, ts.chronic * 0.85) * SCH.maxRamp);
+  // One easy week among the last four (planned or not) shouldn't drag the target down: build from the other three weeks.
+  // (A near-empty week, like time off, is not an easy week: that one keeps the careful ramp-back below.)
+  const blocks = cardioBlocks(today), sum4 = blocks.reduce((x, y) => x + y, 0), lowest = Math.min(...blocks), others = (sum4 - lowest) / 3;
+  const easyWeek = ts.chronic > 0 && lowest < SCH.deload.minShare * (sum4 / 4) && lowest >= 0.6 * others;
+  const basis = easyWeek ? others : ts.chronic;
+  let target = basis > 0 ? basis * G.mult : 250 * G.mult;
+  if (ts.chronic > 0 && !easyWeek) target = Math.min(target, Math.max(ts.load7, ts.chronic * 0.85) * SCH.maxRamp);
   const adj = (readyLow ? 0.9 : 1) * (ts.ratio > 1.5 ? 0.85 : 1);
   target *= adj;
-  // Never plan more than 15% above your 4-week average (recover: 5% above its target).
-  const ceiling = G.mult >= 1 ? (ts.chronic > 0 ? ts.chronic : 250) * 1.15 * adj : target * 1.05;
+  // Never plan more than 15% above your recent average (recover: 5% above its target).
+  const ceiling = G.mult >= 1 ? (basis > 0 ? basis : 250) * 1.15 * adj : target * 1.05;
   const counts = (it) => !it.done && !it.skipped && nz(it.load);
   const total = () => doneToday + days.reduce((s, d) => s + d.items.filter(counts).reduce((x, it) => x + it.load, 0), 0);
 
@@ -1235,6 +1275,25 @@ function buildSchedule(opts = {}) {
     const minutes = Math.max(30, Math.min(45, Math.round(gap / bikeEasy / 5) * 5));
     if (fd && gap > target * 0.12 && total() + minutes * bikeEasy <= ceiling) addOn(fd, "bike", "easy", minutes, bikeEasy, true);
   }
+  // Volume maxed out (every extra session at its longest, target still not reached)? Then the weekly bike session gets harder instead.
+  // Progression counts from the day the volume first maxed out (st.capSince, saved by the page); it restarts after two months without a hard bike.
+  const capSince = st.capSince && !(hardBikesSince(addDays(today, -56), today) === 0 && st.capSince <= addDays(today, -56)) ? st.capSince : null;
+  const allItems = days.flatMap((d) => d.items);
+  const tempoItem = allItems.find((it) => it.role === "tempo" && !it.skipped && !it.done);
+  const extras = allItems.filter((it) => !it.base && !it.skipped && !it.done);
+  const maxed = extras.length > 0 && extras.every((it) => it.minutes >= Math.min(G.addOn[1], it.kind === "run" ? runCap : SCH.addOnMax));
+  const capped = maxed && !readyLow && total() < target * 0.97;
+  let level = 1;
+  if (tempoItem) {
+    const hardRate = loadPerMin("bike", true);
+    if (capSince) level = Math.min(TEMPO.length, 1 + Math.floor(hardBikesSince(capSince, today) / SCH.hardBikeEvery));
+    const loadAt = (lv) => Math.round((lv > 1 ? SCH.addOnMax : tempoItem.minutes) * hardRate * SCH.tempoLoad[lv - 1]);
+    while (level > 1 && total() - tempoItem.load + loadAt(level) > ceiling) level--; // never past the safe ceiling
+    if (level > 1) tempoItem.minutes = SCH.addOnMax; // the harder sessions need the full 45 minutes
+    tempoItem.level = level; tempoItem.perMin = hardRate * SCH.tempoLoad[level - 1];
+    tempoItem.load = Math.round(tempoItem.minutes * tempoItem.perMin);
+    tempoItem.title = TEMPO[level - 1].name; tempoItem.text = describe(tempoItem, G, weekNo);
+  }
   days.forEach((d) => {
     if (d.items.length === 0 && !d.notes.length) d.notes.push("Rest day.");
     d.items.filter((it) => it.kind.startsWith("lift")).forEach((it) => {
@@ -1258,7 +1317,9 @@ function buildSchedule(opts = {}) {
   if (readyLow) why.push("Readiness is low, so the next two days stay easy.");
   if (ts.ratio > 1.5) why.push("Recent load is high, so the plan eases off.");
   if (ts.ratio !== null && ts.ratio < 0.8) why.push("Recent load is low, so the plan builds back gradually.");
-  return { goal, G, days, target: Math.round(target), ceiling: Math.round(ceiling), planned, minutes, warnings, why: why.join(" "), ts, rd, readyLow, qDate, today };
+  if (deload) why.push("Easier week: you've had three normal weeks in a row, so this one is about 70% with lighter lifts and short optional cardio.");
+  if (tempoItem && level > 1) why.push(`Weekly volume is maxed out, so the bike session is now "${TEMPO[level - 1].name}" (step ${level} of ${TEMPO.length}).`);
+  return { goal, deload, capped, tempoLevel: level, G, days, target: Math.round(target), ceiling: Math.round(ceiling), planned, minutes, warnings, why: why.join(" "), ts, rd, readyLow, qDate, today };
 }
 
 function suggestGoal(ts, rd) {
@@ -1346,20 +1407,20 @@ function openMoveSheet(date, kind) {
 
 function schedAction(d) {
   const st = schedState();
-  if (d.sch === "goal") st.goal = d.goal;
+  if (d.sch === "goal") { st.goal = d.goal; st.improveSince = d.goal === "improve" ? localToday() : null; st.capSince = null; }
   else if (d.sch === "skip") { if (st.skip[d.id]) delete st.skip[d.id]; else st.skip[d.id] = true; }
   else if (d.sch === "done") { if (st.done[d.id]) delete st.done[d.id]; else st.done[d.id] = true; }
   else if (d.sch === "move") return openMoveSheet(d.date, d.kind);
   else if (d.sch === "add") return openAddSheet(d.date);
   else if (d.sch === "remove") { removeSession(d.date, d.kind); return render(); }
-  else if (d.sch === "reset") { st.moves = {}; st.skip = {}; st.custom = {}; }
+  else if (d.sch === "reset") { st.moves = {}; st.skip = {}; st.custom = {}; st.capSince = null; }
   else if (d.sch === "catchup") { st.moves[d.to] = [...baseKinds(d.to, st), d.kind]; st.skip[d.id] = true; }
   schedSave(st);
   render();
 }
 
 function sessionHtml(it, date) {
-  const k = SCH.kinds[it.kind], title = it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label;
+  const k = SCH.kinds[it.kind], title = it.title || (it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label);
   const chip = it.done ? `<span class="chip-status">✓ Done</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
   const mins = (it.done && it.done.minutes) || it.minutes;
   const menu = [];
@@ -1372,14 +1433,17 @@ function sessionHtml(it, date) {
   return `<div class="sess compact ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
     <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}<span class="sess-dur">${mins ? mins + " min" : ""}</span>${quick}
       <button class="more-btn" data-sch="more" aria-label="More options for ${esc(title)}">⋯</button></div>
-    <div class="sess-actions" hidden>${menu.join("")}</div></div>`;
+    <div class="sess-actions" hidden>${it.text ? `<p class="sess-detail">${esc(it.text)}</p>` : ""}${menu.join("")}</div></div>`;
 }
 
 function renderSchedule(view) {
-  const st = schedState(), plan = buildSchedule({ state: st }), today = plan.today;
+  const st = schedState();
+  if (st.goal === "improve" && !st.improveSince) { st.improveSince = localToday(); schedSave(st); } // the easier-week cycle counts from here
+  const plan = buildSchedule({ state: st }), today = plan.today;
+  if (plan.goal === "improve" && plan.capped && !plan.deload && !st.capSince) { st.capSince = today; schedSave(st); } // bike progression counts from here
   const sug = suggestGoal(plan.ts, plan.rd);
   const seg = Object.entries(SCH.goals).map(([k, g]) => `<button class="seg-btn ${k === plan.goal ? "active" : ""}" data-sch="goal" data-goal="${k}" aria-pressed="${k === plan.goal}">${g.label}${k === sug.goal ? `<span class="sug-dot" role="img" aria-label="suggested right now" title="Suggested right now"></span>` : ""}</button>`).join("");
-  section(view, `<div class="card-head"><h2>Training plan</h2><span class="plan-stats"><span><b>${num(plan.planned)}</b> cardio load</span><span><b>${dur(plan.minutes * 60)}</b> planned</span></span></div>
+  section(view, `<div class="card-head"><h2>Training plan${plan.deload ? ` <span class="chip-status">Easier week</span>` : ""}</h2><span class="plan-stats"><span><b>${num(plan.planned)}</b> cardio load</span><span><b>${dur(plan.minutes * 60)}</b> planned</span></span></div>
     <div class="seg" role="group" aria-label="Training goal">${seg}</div>`);
   if (plan.warnings.length) section(view, `<h2>Worth a look</h2>${plan.warnings.map((w) => `<p class="note">⚠️ ${esc(w.text)}</p>`).join("")}`);
   plan.days.forEach((d) => {
@@ -1404,6 +1468,7 @@ function renderSchedule(view) {
   section(view, `<details><summary>How the plan is made</summary>
     <p class="note"><b>Goals.</b> Improve: ${esc(SCH.text.improve)} Maintain: ${esc(SCH.text.maintain)} Recover: ${esc(SCH.text.recover)} The dot on a goal marks the one suggested right now: ${esc(sug.reason)}</p>
     <p class="note">${esc(plan.why)}</p>
+    <p class="note"><b>Easier week.</b> In Improve, after three normal weeks in a row (counted from when you chose Improve) the next week is easier: about ${Math.round(SCH.deload.mult * 100)}% of the target, lighter lifts and short optional cardio. <b>Harder bike session.</b> Once weekly volume can't grow any more (extra sessions at their longest), the weekly bike session gets harder step by step: tempo, threshold, hard intervals, then VO2 intervals. It moves up one step for every ${SCH.hardBikeEvery} hard bike sessions you complete after that point. Tap ⋯ on a session to see its details.</p>
     <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Easy bike or run: zone 2${zoneText(2)}, conversational. Tempo bike (one a week when improving): 10 min easy, 3 × 8 min in zone 3–4${zoneText(3)}, easy between and at the end. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. Tap ⋯ on a session to move, remove or skip it, and use ＋ Add on a day to add any session.</p>
     <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. For load, the swim where your legs are fresh (Thursday) counts as the harder one and Tuesday's as easier.</p>
     <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself. Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>

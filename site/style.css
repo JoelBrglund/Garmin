@@ -281,3 +281,5 @@ details summary { cursor: pointer; color: var(--accent); font-size: 13.5px; marg
 .more-btn:hover { background: var(--surface-2); }
 .sug-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-left: 6px; vertical-align: 2px; }
 .seg-btn.active .sug-dot { background: var(--page); }
+
+.sess-detail { flex-basis: 100%; margin: 0 0 2px; font-size: 13px; color: var(--text-2); }
