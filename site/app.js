@@ -342,7 +342,15 @@ function rows(list) {
 function tile(label, value, sub = "", extra = "") {
   return `<div class="tile"><div class="label">${esc(label)}</div><div class="value">${value}</div>${sub ? `<div class="sub">${sub}</div>` : ""}${extra}</div>`;
 }
-const meter = (frac) => `<div class="meter"><span style="width:${Math.max(0, Math.min(1, frac || 0)) * 100}%"></span></div>`;
+// Where a value sits against its normal range (lo..hi) on a 0..max scale.
+const gaugeHtml = (value, lo, hi, max, label) => {
+  const pct = (v) => `${Math.max(0, Math.min(100, (v / max) * 100)).toFixed(1)}%`;
+  return `<div class="gauge" role="img" aria-label="${esc(label)}"><span class="gauge-range" style="left:${pct(lo)};width:${(Math.min(100, (hi / max) * 100) - Math.min(100, (lo / max) * 100)).toFixed(1)}%"></span><span class="gauge-dot" style="left:${pct(value)}"></span></div>
+    <div class="gauge-scale"><span>0×</span><span>normal ${lo}–${hi}×</span><span>${max}×</span></div>`;
+};
+const meter = (frac, color = "") => `<div class="meter"><span style="width:${Math.max(0, Math.min(1, frac || 0)) * 100}%${color ? `;background:${color}` : ""}"></span></div>`;
+// Score bands share colours with the readiness ring.
+const bandColor = (score) => `var(${score >= 70 ? "--good" : score >= 55 ? "--warning" : score >= 40 ? "--serious" : "--critical"})`;
 
 function stackBar(parts) { // parts: [{label, value, color}]
   const total = parts.reduce((a, p) => a + (p.value || 0), 0);
@@ -629,7 +637,7 @@ const RD = {
   baselineDays: 42, nights: 3,
   halfLifeDays: 1.4,         // how fast a workout's fatigue fades
   steadyLoad: 2.54,          // decayed load of steady daily training, in days of average load
-  labels: [[85, "Prime", "good"], [70, "Good", "good"], [55, "Moderate", ""], [40, "Low", "warning"], [0, "Poor", "critical"]],
+  labels: [[85, "Prime", "good"], [70, "Good", "good"], [55, "Moderate", "warning"], [40, "Low", "serious"], [0, "Poor", "critical"]],
 };
 const clamp100 = (x) => Math.max(0, Math.min(100, x));
 const sdOf = (vals) => { const v = vals.filter(nz); if (v.length < 4) return null; const m = avg(v); return Math.sqrt(avg(v.map((x) => (x - m) ** 2))); };
@@ -680,11 +688,21 @@ function readiness(day = latestDate()) {
   return res;
 }
 
+// Circular gauge: the colour follows the score band, the number is always shown too.
+function ringHtml(score) {
+  const R = 52, C = 2 * Math.PI * R, frac = score === null ? 0 : Math.max(0, Math.min(1, score / 100));
+  const col = score === null ? "--muted" : score >= 70 ? "--good" : score >= 55 ? "--warning" : score >= 40 ? "--serious" : "--critical";
+  return `<div class="ring" style="--ring: var(${col})" role="img" aria-label="Readiness ${score === null ? "not available" : `${score} out of 100`}">
+    <svg viewBox="0 0 120 120" aria-hidden="true"><circle class="ring-track" cx="60" cy="60" r="${R}" stroke-width="11"/>
+      <circle class="ring-fg" cx="60" cy="60" r="${R}" stroke-width="11" stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${C.toFixed(1)}" data-offset="${(C * (1 - frac)).toFixed(1)}"/></svg>
+    <span class="ready-score" aria-hidden="true">${score ?? "–"}</span></div>`;
+}
+
 function readinessCard(view, day) {
   const r = readiness(day);
-  const bars = r.parts.map((p) => `<div class="focus"><div class="focus-top"><span>${esc(p.label)}</span><span><b>${p.score}</b> <small class="muted">${esc(p.detail)}</small></span></div>${meter(p.score / 100)}</div>`).join("");
-  section(view, `<div class="card-head"><h2>Readiness</h2></div>
-    <div class="ready"><span class="ready-score">${r.score ?? "–"}</span><div>${statusBadge(r, true)}<p class="note" style="margin-top:2px">${esc(r.reason)}</p></div></div>
+  const bars = r.parts.map((p) => `<div class="focus"><div class="focus-top"><span>${esc(p.label)}</span><span><b>${p.score}</b> <small class="muted">${esc(p.detail)}</small></span></div>${meter(p.score / 100, bandColor(p.score))}</div>`).join("");
+  const card = section(view, `<div class="card-head"><h2>Readiness</h2></div>
+    <div class="ready">${ringHtml(r.score)}<div class="ready-text">${statusBadge(r, true)}<p class="note">${esc(r.reason)}</p></div></div>
     <details><summary>Show details</summary>
       ${bars}
       ${DATA.hevy ? `<h3 style="margin-top:12px">Muscle freshness</h3>${rows(freshness(day).map((f) => [f.label, `<span class="status ${f.fresh ? "good" : "warning"}">${f.fresh ? "Fresh" : "Recovering"}</span> <span class="muted small">${f.text}</span>`]))}` : ""}
@@ -692,6 +710,8 @@ function readinessCard(view, day) {
       <p class="note">A 0–100 score for how ready you are to train hard today, from four things: HRV (30%), sleep (25%), resting heart rate (15%) and how much recent training is still weighing on you (30%). Training load fades with a half-life of about a day and a half and is compared with your normal daily load.</p>
       ${DATA.hevy ? `<p class="note">Lifting counts as gym load from Hevy (hard sets × ${HV.loadPerSet}). Muscle freshness shows which muscle groups had a hard session in the last ${HV.freshDays} days.</p>` : ""}
     </details>`);
+  const fg = card.querySelector(".ring-fg"); // fill the ring on the next frame so it animates
+  if (fg) requestAnimationFrame(() => requestAnimationFrame(() => { fg.style.strokeDashoffset = fg.dataset.offset; }));
 }
 
 
@@ -928,7 +948,7 @@ function gymDetail(view) {
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(g.load7), "last 7 days")}
       ${tile("4-week average", num(g.chronic), "per week")}
-      <div style="grid-column:1/-1">${tile("Load ratio", g.ratio === null ? "–" : `${num(g.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((g.ratio || 0) / 2))}</div>
+      <div style="grid-column:1/-1">${tile("Load ratio", g.ratio === null ? "–" : `${num(g.ratio, 2)}×`, "", g.ratio === null ? "" : gaugeHtml(g.ratio, 0.8, 1.5, 2, `Gym load ratio ${num(g.ratio, 2)} times your average, normal range 0.8 to 1.5`))}</div>
     </div>
     <details><summary>Show strength signals</summary>
       ${g.signals.length ? rows(g.signals.map((s) => [s.label, `${arrow[s.verdict]}<br><span class="muted small">${esc(s.detail)}</span>`])) : `<p class="empty">Not enough data yet.</p>`}
@@ -959,7 +979,7 @@ function renderStrength(view) {
   const top = Object.entries(totals).sort((a, b) => b[1] - a[1]), mx = top.length ? top[0][1] : 1;
   const bal = section(view, `<div class="card-head"><h2>Muscle balance</h2><span class="muted small">last 4 weeks · sets per week</span></div>
     ${stackBar(GROUPS.map(([k, label, c]) => ({ label, value: grp[k], color: css(c), text: `${num(grp[k] / 4, 1)}/wk` })))}
-    ${top.length ? top.map(([m, v]) => `<div class="focus"><div class="focus-top"><span>${esc(humanize(m))}</span><b>${num(v / 4, 1)}</b></div>${meter(v / mx)}</div>`).join("") : `<p class="empty">No lifting in the last 4 weeks.</p>`}
+    ${top.length ? top.map(([m, v]) => `<div class="focus"><div class="focus-top"><span>${esc(humanize(m))}</span><b>${num(v / 4, 1)}</b></div>${meter(v / mx, `var(${(GROUPS.find((g) => g[0] === MUSCLE_GROUP[m]) || GROUPS[0])[2]})`)}</div>`).join("") : `<p class="empty">No lifting in the last 4 weeks.</p>`}
     <p class="note">Main muscle counts as a full set, helper muscles as half. A big gap between push and pull, or legs far behind, is worth a look.</p>`);
 
   // Progress per lift
@@ -1034,7 +1054,7 @@ function statusDetail(view) {
     <div class="tiles" style="margin-top:12px">
       ${tile("This week's load", num(ts.totalLoad7), `last 7 days · <b>${num(ts.load7)}</b> cardio only`)}
       ${tile("4-week average", num(ts.totalChronic), `per week · <b>${num(ts.chronic)}</b> cardio only`)}
-      <div style="grid-column:1/-1">${tile("Load ratio", ts.ratio === null ? "–" : `${num(ts.ratio, 2)}×`, "0.8–1.5× is the normal range", meter((ts.ratio || 0) / 2))}</div>
+      <div style="grid-column:1/-1">${tile("Load ratio", ts.ratio === null ? "–" : `${num(ts.ratio, 2)}×`, "", ts.ratio === null ? "" : gaugeHtml(ts.ratio, 0.8, 1.5, 2, `Load ratio ${num(ts.ratio, 2)} times your average, normal range 0.8 to 1.5`))}</div>
     </div>
     <details><summary>Show fitness signals</summary>
       ${sigRows}
@@ -1502,6 +1522,7 @@ const compact = (v) => Math.abs(v) >= 1000 ? `${+(v / 1000).toFixed(1)}K` : `${+
  * cfg: { type, labels[], tipLabels[], x[] (optional numeric x), series:[{name, color, values[]}],
  *        yFmt(v), band:{lo[],hi[]}, yMin, height, connect, endLabel }
  */
+let CHART_ID = 0;
 function chart(el, cfg) {
   el.classList.add("chart");
   const draw = () => {
@@ -1533,7 +1554,11 @@ function chart(el, cfg) {
     } else if (cfg.type === "line") X = (i) => padL + (n === 1 ? pw / 2 : (i / (n - 1)) * pw);
     else X = (i) => padL + band * (i + 0.5);
 
-    let s = `<svg xmlns="${NS}" viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(cfg.title || "chart")}">`;
+    const fmtA = cfg.yFmt || ((v) => num(v)), v0 = cfg.series[0].values.filter(nz);
+    const summary = cfg.type === "line" && v0.length ? `: latest ${fmtA(v0[v0.length - 1])}, range ${fmtA(Math.min(...v0))} to ${fmtA(Math.max(...v0))}` : "";
+    const gid = `cg${++CHART_ID}`;
+    let s = `<svg xmlns="${NS}" viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc((cfg.title || "chart") + summary)}">`;
+    if (cfg.type === "line" && cfg.series.length === 1) s += `<defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${cfg.series[0].color}" stop-opacity="0.24"/><stop offset="1" stop-color="${cfg.series[0].color}" stop-opacity="0"/></linearGradient></defs>`;
     s += `<g class="grid">${ticks.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${Y(t)}" y2="${Y(t)}"/>`).join("")}</g>`;
     s += ticks.map((t) => `<text class="axis-text" x="${padL - 6}" y="${Y(t) + 4}" text-anchor="end">${esc((cfg.axisFmt || compact)(t))}</text>`).join("");
     // x labels: about 5, evenly spaced
@@ -1577,6 +1602,13 @@ function chart(el, cfg) {
           const v = sr.values[i];
           if (!nz(v)) { if (!cfg.connect) pen = false; continue; }
           d += `${pen ? "L" : "M"}${X(i).toFixed(1)},${Y(v).toFixed(1)}`; pen = true; lastI = i;
+        }
+        if (cfg.series.length === 1 && cfg.area !== false) { // soft fill under the line, one piece per run of points
+          let seg = [], area = "";
+          const flush = () => { if (seg.length > 1) area += `M${seg[0][0]},${Y(y0)}` + seg.map(([x, y]) => `L${x},${y}`).join("") + `L${seg[seg.length - 1][0]},${Y(y0)}Z`; seg = []; };
+          for (let i = 0; i < n; i++) { const v = sr.values[i]; if (!nz(v)) { if (!cfg.connect) flush(); continue; } seg.push([X(i).toFixed(1), Y(v).toFixed(1)]); }
+          flush();
+          if (area) s += `<path class="area" d="${area}" fill="url(#${gid})"/>`;
         }
         s += `<path class="line" d="${d}" stroke="${sr.color}"/>`;
         const pts = sr.values.filter(nz).length;
@@ -1638,7 +1670,7 @@ function tableView(cfg) {
   const body = cfg.labels.map((_, i) => i).reverse()
     .filter((i) => cfg.series.some((s) => nz(s.values[i])))
     .map((i) => `<tr><td>${esc((cfg.tipLabels || cfg.labels)[i])}</td>${cfg.series.map((s) => `<td>${nz(s.values[i]) ? fmt(s.values[i]) : "–"}</td>`).join("")}</tr>`).join("");
-  return `<details><summary>Show numbers</summary><div class="table-wrap"><table>${head}${body}</table></div></details>`;
+  return `<details><summary>Show numbers</summary><div class="table-wrap" tabindex="0" role="region" aria-label="${esc(cfg.title || "Chart")}: table of values"><table>${head}${body}</table></div></details>`;
 }
 
 // Card with a chart (and a table of the numbers underneath).
@@ -1647,7 +1679,7 @@ function chartCard(container, title, cfg, note = "") {
   card.className = "card";
   const legend = cfg.series.length > 1
     ? `<div class="legend" style="margin-bottom:6px">${cfg.series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join("")}</div>` : "";
-  card.innerHTML = `<div class="card-head"><h2>${esc(title)}</h2>${cfg.headRight || ""}</div>${legend}<div class="chart-box"></div>${note ? `<p class="note">${note}</p>` : ""}${cfg.noTable ? "" : tableView(cfg)}`;
+  card.innerHTML = `<div class="card-head"><h2>${esc(title)}</h2>${cfg.headRight || ""}</div>${legend}<div class="chart-box"></div>${note ? `<p class="note">${note}</p>` : ""}${cfg.noTable ? "" : tableView({ ...cfg, title })}`;
   container.appendChild(card);
   chart(card.querySelector(".chart-box"), { ...cfg, title });
   return card;
@@ -1796,10 +1828,10 @@ function openActivity(id) {
     const setText = (x) => `${x.kg > 0 ? lift(x.kg) + " × " : ""}${num(x.reps)}`;
     const tbl = a.hevy.exercises.map((ex) => `<tr><td>${esc(exName(ex))}</td><td>${(ex.sets || []).map((x) => (x.type === "warmup" ? `<span class="muted">${esc(setText(x))}</span>` : esc(setText(x)))).join(", ")}</td></tr>`).join("");
     html += `<section class="card"><h2>Strength · from Hevy</h2>${rows([["Exercises", num(h.exercises)], ["Hard sets", num(h.sets)], ["Volume", volText(h.volume)], ["Gym load", num(hevyLoad(a.hevy))]])}
-      <div class="table-wrap"><table><tr><th>Exercise</th><th>Sets (warm-ups grey)</th></tr>${tbl}</table></div></section>`;
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Exercises and sets"><table><tr><th>Exercise</th><th>Sets (warm-ups grey)</th></tr>${tbl}</table></div></section>`;
   } else if (a.totalSets || a.exerciseSets) {
     const ex = (a.exerciseSets || []).filter((x) => x.sets);
-    const table = ex.length ? `<div class="table-wrap"><table><tr><th>Exercise</th><th>Sets</th><th>Reps</th><th>Volume</th><th>Time</th></tr>${ex.map((x) =>
+    const table = ex.length ? `<div class="table-wrap" tabindex="0" role="region" aria-label="Exercise summary"><table><tr><th>Exercise</th><th>Sets</th><th>Reps</th><th>Volume</th><th>Time</th></tr>${ex.map((x) =>
       `<tr><td>${esc(humanize(x.category))}</td><td>${num(x.sets)}</td><td>${num(x.reps)}</td><td>${x.volume ? weight(x.volume / 1000) : "–"}</td><td>${dur((x.duration || 0) / 1000, "clock")}</td></tr>`).join("")}</table></div>` : "";
     html += `<section class="card"><h2>Strength</h2>${rows([["Sets", num(a.activeSets ?? a.totalSets)], ["Reps", num(a.totalReps)]])}${table}</section>`;
   }
@@ -1874,6 +1906,13 @@ function dayPicker(view, dates, current, onChange, labelFn = relDay) {
   view.appendChild(el);
 }
 
+function sectionTitle(view, text) {
+  const h = document.createElement("h2");
+  h.className = "section-title";
+  h.textContent = text;
+  view.appendChild(h);
+}
+
 function section(view, html, cls = "card") {
   const el = document.createElement("section");
   el.className = cls;
@@ -1888,7 +1927,10 @@ function renderToday(view) {
   const d = byDate.get(state.day) || {};
   const sl = d.sleep, hrv = d.hrv;
 
+  readinessCard(view, state.day);
+
   // Recovery: how well the body bounced back overnight
+  sectionTitle(view, "Recovery");
   section(view, [
     tile("HRV (overnight)", hrv && nz(hrv.avg) ? `${num(hrv.avg)}<small> ms</small>` : "–",
       hrv ? `${status(hrv.status)}${nz(hrv.weekly) ? `<br>7-day avg ${num(hrv.weekly)} ms` : ""}${hrv.low ? ` · normal ${num(hrv.low)}–${num(hrv.high)}` : ""}` : "No reading"),
@@ -1899,10 +1941,30 @@ function renderToday(view) {
       sl && nz(sl.respAvg) ? vsBaseline(sl.respAvg, baseline((x) => x.sleep?.respAvg, state.day), "brpm") : ""),
   ].join(""), "tiles");
 
-  readinessCard(view, state.day);
+  // Workouts
+  const acts = DATA.activities.filter((a) => actDate(a) === state.day);
+  const latest = DATA.activities.find((a) => actDate(a) < state.day);
+  sectionTitle(view, acts.length ? "Workouts" : "Rest day");
+  section(view, acts.length ? actList(acts)
+    : `<p class="empty">No workouts this day.</p>${latest ? `<h3 style="margin-top:6px">Latest workout</h3>${actList([latest])}` : ""}`);
+
+  // Training: status and this week vs last week
+  sectionTitle(view, "Training");
   statusCard(view, state.day);
   if (DATA.hevy) gymCard(view, state.day);
+  const wk = (from, to) => {
+    const list = DATA.activities.filter((a) => actDate(a) >= from && actDate(a) < to);
+    return { n: list.length, t: list.reduce((x, a) => x + actTime(a), 0), load: list.reduce((x, a) => x + (a.activityTrainingLoad || 0), 0) };
+  };
+  const mon = mondayOf(localToday());
+  const thisWk = wk(mon, addDays(mon, 7)), lastWk = wk(addDays(mon, -7), mon);
+  section(view, [
+    tile("This week", `${num(thisWk.n)}<small> workouts</small>`, `${dur(thisWk.t)} · training load ${num(thisWk.load)}`),
+    tile("Last week", `${num(lastWk.n)}<small> workouts</small>`, `${dur(lastWk.t)} · training load ${num(lastWk.load)}`),
+  ].join(""), "tiles");
 
+  // Trends
+  sectionTitle(view, "Trends");
   const last14 = DATA.days.filter((x) => x.date <= state.day).slice(-14);
   const labels = last14.map((x) => fmtDay(x.date, { day: "numeric", month: "short" }));
   const tipLabels = last14.map((x) => fmtDay(x.date));
@@ -1916,24 +1978,6 @@ function renderToday(view) {
     type: "line", labels, tipLabels, noTable: true, height: 150,
     series: [{ name: "Resting HR", color: css("--s1"), values: last14.map((x) => x.rhr) }], yFmt: (v) => `${num(v)} bpm`,
   }, "A few beats above normal can mean fatigue, stress or illness.");
-
-  // Workouts
-  const acts = DATA.activities.filter((a) => actDate(a) === state.day);
-  const latest = DATA.activities.find((a) => actDate(a) < state.day);
-  section(view, acts.length ? `<h2>Workouts</h2>${actList(acts)}`
-    : `<h2>Rest day</h2><p class="empty">No workouts this day.</p>${latest ? `<h3 style="margin-top:6px">Latest workout</h3>${actList([latest])}` : ""}`);
-
-  // Training this week vs last week
-  const wk = (from, to) => {
-    const list = DATA.activities.filter((a) => actDate(a) >= from && actDate(a) < to);
-    return { n: list.length, t: list.reduce((x, a) => x + actTime(a), 0), load: list.reduce((x, a) => x + (a.activityTrainingLoad || 0), 0) };
-  };
-  const mon = mondayOf(localToday());
-  const thisWk = wk(mon, addDays(mon, 7)), lastWk = wk(addDays(mon, -7), mon);
-  section(view, [
-    tile("This week", `${num(thisWk.n)}<small> workouts</small>`, `${dur(thisWk.t)} · training load ${num(thisWk.load)}`),
-    tile("Last week", `${num(lastWk.n)}<small> workouts</small>`, `${dur(lastWk.t)} · training load ${num(lastWk.load)}`),
-  ].join(""), "tiles");
 }
 
 function renderSleep(view) {
@@ -1949,7 +1993,7 @@ function renderSleep(view) {
     { label: "REM", value: s.rem, color: c[2] }, { label: "Awake", value: s.awake, color: c[3] },
   ].map((p) => ({ ...p, text: `${dur(p.value)}${s.total ? ` · ${Math.round(((p.value || 0) / (s.total + (s.awake || 0))) * 100)}%` : ""}` }));
 
-  section(view, `<div class="hero"><div class="label muted">Sleep score</div>
+  section(view, `<div class="hero"><h2 class="label muted">Sleep score</h2>
       <div class="value">${nz(s.score) ? num(s.score) : "–"}<small> / 100</small></div>
       <div>${status(s.quality)} · ${dur(s.total)} asleep${s.needMinutes ? ` <span class="muted">(need ${dur(s.needMinutes * 60)})</span>` : ""}</div></div>
       <h3 style="margin-top:14px">Sleep stages</h3>${stackBar(stages)}

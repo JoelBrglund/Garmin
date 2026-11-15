@@ -19,6 +19,21 @@ The owner is a beginner: explain unfamiliar technical concepts in plain English 
 
 Live site: https://joelbrglund.github.io/Garmin/ (repo: github.com/JoelBrglund/Garmin, public). Pushing to `main` rebuilds and publishes it automatically (~2 min). Secrets and Pages (source: GitHub Actions) are already set up.
 
+## Design system (keep to this when changing the UI)
+
+Researched against Apple's Human Interface Guidelines (layout, typography, color, charting data; iOS 26 tab bar guidance), WCAG 2.2 and web.dev's installed-app guidance. All of it lives in `site/style.css`.
+
+- **Colour only for meaning.** The interface chrome is neutral ink (selected tab/segment/chip = ink, not blue). Hues are reserved for data, status and activity type, so one colour never means two things. The single interface colour is `--accent` (keyboard focus ring, "today" marker).
+- **Contrast is a rule, not a taste.** Every text colour >= 4.5:1 and every chart/status colour >= 3:1 on its surface, light and dark. Tokens were validated with a contrast script; the muted text colour is `#6a6a6f` light / `#9a9aa0` dark. If you add a colour, check it. The strength yellow `#f2b705` (owner's choice, Garmin-like) is only used as a bar/tint beside a text label.
+- **Surfaces** follow the iOS grouped pattern: page `#f2f2f7` / `#000`, cards `#fff` / `#1c1c1e`, depth from a soft shadow (light) or hairline (dark); radii card 20, tile 16, control 12; 4 px spacing grid. Tiles nested inside a card are flat (`.card .tile`).
+- **Type** is in `rem` so the app follows the iPhone text-size setting (`font: -apple-system-body`); scale: 1.75 title, 1.125 card title, 1 body, 0.9375 secondary, 0.8125 footnote, 0.75 caption (never smaller); tabular numbers everywhere.
+- **Hierarchy:** the most important thing first. Today opens with the Readiness hero (progress ring, `ringHtml()`), then sections with small headings (`sectionTitle()`): Recovery, Workouts, Training, Trends. Progressive disclosure (`<details>`) for everything secondary. Range values use `gaugeHtml()` (normal range band + dot).
+- **Navigation:** bottom tab bar on phones; at >= 900 px the same `<nav>` becomes a left sidebar (CSS only).
+- **Touch + keyboard:** every control is >= 44 x 44 px, `:focus-visible` shows a 3 px ring, controls use `touch-action: manipulation` and `user-select: none`.
+- **Motion** is small and always disabled by `prefers-reduced-motion`. Also handled: `prefers-contrast: more`, `forced-colors`, safe-area insets, light/dark theme-color metas.
+- **Charts:** one soft area fill under single lines, light grid, end-point label, `aria-label` with latest value and range, and a "Show numbers" table (named per chart, keyboard-focusable).
+- **Checking changes:** the browser audit used axe-core (WCAG 2.2 AA + best practice) on every tab in light and dark, 44 px targets, no sideways scrolling from 320 px to 1280 px and at 150% / 200% text, keyboard focus and reduced motion. Zero violations at the time of the redesign; re-run something equivalent after bigger UI changes.
+
 ## Dashboard design decisions
 
 - Four tabs: **Today** (recovery tiles: HRV, resting HR, sleep, overnight breathing compared with the 30-day baseline; 14-day HRV/RHR charts; that day's workouts or the latest one; this week vs last week), **Sleep**, **Activities**, **Fitness** (RHR and HRV with 7-day averages, running efficiency, swim pace, SWOLF, weekly training load, weight, fitness age, HR zones).
