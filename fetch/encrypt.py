@@ -51,15 +51,21 @@ def with_refresh_key(plaintext: bytes) -> bytes:
     passphrase can use it. Without DASHBOARD_REFRESH_TOKEN the button just reloads the website copy.
     """
     token = os.environ.get("DASHBOARD_REFRESH_TOKEN", "").strip()
-    if not token:
+    cal_url = os.environ.get("GOOGLE_CALENDAR_URL", "").strip()
+    cal_secret = os.environ.get("GOOGLE_CALENDAR_SECRET", "").strip()
+    use_cal = bool(cal_url and cal_secret)
+    if not token and not use_cal:
         return plaintext
     data = json.loads(plaintext)
-    data["refresh"] = {
-        "token": token,
-        "repo": os.environ.get("GITHUB_REPOSITORY", "JoelBrglund/Garmin"),
-        "workflow": "update.yml",
-        "ref": "main",
-    }
+    if token:
+        data["refresh"] = {
+            "token": token,
+            "repo": os.environ.get("GITHUB_REPOSITORY", "JoelBrglund/Garmin"),
+            "workflow": "update.yml",
+            "ref": "main",
+        }
+    if use_cal:  # Google Calendar bridge (see calendar-bridge/SETUP.md); also only inside the encrypted copy
+        data["calendar"] = {"url": cal_url, "secret": cal_secret}
     return json.dumps(data).encode("utf-8")
 
 

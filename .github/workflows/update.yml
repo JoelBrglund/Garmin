@@ -45,6 +45,8 @@ jobs:
           DASHBOARD_PASSPHRASE: ${{ secrets.DASHBOARD_PASSPHRASE }}
           # Optional: lets the dashboard's refresh button start this workflow (stored encrypted only).
           DASHBOARD_REFRESH_TOKEN: ${{ secrets.DASHBOARD_REFRESH_TOKEN }}
+          GOOGLE_CALENDAR_URL: ${{ secrets.GOOGLE_CALENDAR_URL }}
+          GOOGLE_CALENDAR_SECRET: ${{ secrets.GOOGLE_CALENDAR_SECRET }}
         run: python fetch/encrypt.py
 
       - name: Remove unencrypted data before publishing

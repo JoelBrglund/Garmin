@@ -1,7 +1,7 @@
 // Service worker: lets the installed app open without internet by keeping the last copy.
 // Always tries the network first, so you see fresh data whenever you're online.
-const CACHE = "garmin-v23";
-const SHELL = ["./", "index.html", "style.css", "app.js", "manifest.webmanifest",
+const CACHE = "garmin-v24";
+const SHELL = ["./", "index.html", "style.css", "app.js", "calendar-sync.js", "manifest.webmanifest",
   "icons/icon-192.png", "icons/apple-touch-icon.png", "icons/favicon.png"];
 
 self.addEventListener("install", (e) => {

@@ -50,6 +50,7 @@ async function unlock(passphrase, remember) {
   $("#lock").hidden = true;
   $("#app").hidden = false;
   render();
+  if (typeof calendarSyncSoon === "function") calendarSyncSoon("open");
 }
 
 function showLock(message = "") {
@@ -196,6 +197,7 @@ $("#refresh-btn").addEventListener("click", refresh);
 // The installed iPhone app resumes where it was left, so quietly check for new data when it comes back.
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") checkForUpdate();
+  if (document.visibilityState === "visible" && DATA && typeof calendarSyncSoon === "function") calendarSyncSoon("open");
   if (document.visibilityState === "visible" && DATA && !refreshing && Date.now() - lastCheck > 5 * 60000)
     reloadData().catch(() => {});
 });
@@ -1125,7 +1127,10 @@ function schedState() {
   [st.moves, st.done, st.skip, st.custom].forEach((o) => Object.keys(o).forEach((k) => { if (k.slice(0, 10) < cutoff) delete o[k]; }));
   return st;
 }
-const schedSave = (st) => store.set(SCH.key, JSON.stringify(st));
+const schedSave = (st) => {
+  store.set(SCH.key, JSON.stringify(st));
+  if (typeof calendarSyncSoon === "function") calendarSyncSoon("edit"); // keep Google Calendar in step (calendar-sync.js)
+};
 const baseKinds = (date, st) => (st.moves[date] ? [...st.moves[date]] : [...(SCH.skeleton[dayDate(date).getUTCDay()] || [])]);
 
 // Your own load per minute (from your history) for turning a planned session into an expected load.
@@ -1493,6 +1498,7 @@ function renderSchedule(view) {
     <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. For load, the swim where your legs are fresh (Thursday) counts as the harder one and Tuesday's as easier.</p>
     <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself. Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
     <p class="note"><button class="link-btn" data-sch="reset">Reset to the standard week</button></p></details>`);
+  if (typeof calendarCard === "function") calendarCard(view);
   view.querySelectorAll("[data-sch]").forEach((el) => el.addEventListener("click", () => {
     if (el.dataset.sch === "more") el.closest(".sess").querySelector(".sess-actions").toggleAttribute("hidden");
     else schedAction(el.dataset);

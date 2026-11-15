@@ -8,7 +8,7 @@
   <meta name="robots" content="noindex, nofollow">
   <!-- Security rule: the browser may only load code, styles, images and data from this site itself.
        If you add an outside resource (font, library, API), add its address here too. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com https://script.google.com https://script.googleusercontent.com; manifest-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#f2f2f7" media="(prefers-color-scheme: light)">
@@ -79,5 +79,6 @@
 
   <div id="tooltip" class="tooltip" hidden></div>
   <script src="app.js"></script>
+  <script src="calendar-sync.js"></script>
 </body>
 </html>
