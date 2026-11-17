@@ -15,8 +15,9 @@
 
 // Must match GOOGLE_CALENDAR_SECRET in the dashboard's GitHub secrets. Use 30+ random characters.
 const SECRET = "PASTE-A-LONG-RANDOM-SECRET-HERE";
-// "" = your main calendar. Or a name like "Training": the script then creates/uses a separate calendar with that name.
-const CALENDAR_NAME = "";
+// The events go into their own calendar with this name (created the first time), so they stay apart from your main
+// calendar and you can hide or colour them on their own. Use "" to put them in your main calendar instead.
+const CALENDAR_NAME = "Training";
 
 const TAG_KEY = "trainingDashboard";   // hidden marker on events made by this script
 const TAG_VALUE = "1";
@@ -46,58 +47,66 @@ function doPost(e) {
   }
 }
 
-/** Make the calendar's events match req.events ([{day, title}]) inside the window [req.from, req.to].
- *  (Older dashboards send req.days + req.title instead; that still works.) */
+/** Make the calendar match req.events ([{day, title}], one entry per session, several per day allowed)
+ *  inside the window [req.from, req.to]. (Older dashboards send req.days + req.title: one event per day.) */
 function syncDays_(req) {
   var from = req.from, to = req.to;
-  var events = req.events;
-  if (events === undefined && Array.isArray(req.days)) {
-    events = req.days.map(function (d) { return { day: d, title: req.title }; });
+  var list = req.events;
+  if (list === undefined && Array.isArray(req.days)) {
+    list = req.days.map(function (d) { return { day: d, title: req.title }; });
   }
-  if (!isDay_(from) || !isDay_(to) || from > to || !Array.isArray(events) ||
-      !events.every(function (e) { return e && isDay_(e.day); })) throw new Error("invalid window");
+  if (!isDay_(from) || !isDay_(to) || from > to || !Array.isArray(list) ||
+      !list.every(function (e) { return e && isDay_(e.day); })) throw new Error("invalid window");
   if (daysBetween_(from, to) >= MAX_WINDOW_DAYS) throw new Error("window too long");
-  var want = {};
-  events.forEach(function (e) { if (e.day >= from && e.day <= to) want[e.day] = cleanTitle_(e.title); });
+  var want = {}; // day -> list of titles wanted that day
+  list.forEach(function (e) {
+    if (e.day >= from && e.day <= to) (want[e.day] = want[e.day] || []).push(cleanTitle_(e.title));
+  });
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000); // two requests at once would race, so they queue up
   try {
     var tz = Session.getScriptTimeZone();
-    var cal = getCalendar_();
-    var events = cal.getEvents(parseDay_(from, tz), parseDay_(addDays_(to, CLEAN_AHEAD_DAYS + 1), tz));
-    var byDay = {};
-    events.forEach(function (ev) {
-      if (!ev.isAllDayEvent() || ev.getTag(TAG_KEY) !== TAG_VALUE) return; // not ours: never touch
-      var d = Utilities.formatDate(ev.getAllDayStartDate(), tz, "yyyy-MM-dd");
-      (byDay[d] = byDay[d] || []).push(ev);
-    });
-
     var result = { ok: true, created: 0, updated: 0, deleted: 0, kept: 0 };
-    Object.keys(byDay).forEach(function (d) {
-      var list = byDay[d];
-      if (!want[d]) { // training no longer planned that day (or it is past the window): remove our event
-        list.forEach(function (ev) { ev.deleteEvent(); result.deleted++; });
-        return;
-      }
-      for (var i = 1; i < list.length; i++) { list[i].deleteEvent(); result.deleted++; } // duplicates
-      if (list[0].getTitle() !== want[d]) { list[0].setTitle(want[d]); result.updated++; } else result.kept++;
-    });
-    Object.keys(want).forEach(function (d) {
-      if (byDay[d]) return;
-      var ev = cal.createAllDayEvent(want[d], parseDay_(d, tz));
-      ev.setTag(TAG_KEY, TAG_VALUE);
-      result.created++;
-    });
+    reconcile_(getCalendar_(), want, from, to, tz, result);
+    if (CALENDAR_NAME) { // events an earlier version put in your main calendar: remove ours there (only ours)
+      reconcile_(CalendarApp.getDefaultCalendar(), {}, from, to, tz, result);
+    }
     return result;
   } finally {
     lock.releaseLock();
   }
 }
 
+/** Bring our events in `cal` in line with `want`. Only all-day events carrying our hidden tag are ever touched. */
+function reconcile_(cal, want, from, to, tz, result) {
+  var events = cal.getEvents(parseDay_(from, tz), parseDay_(addDays_(to, CLEAN_AHEAD_DAYS + 1), tz));
+  var byDay = {};
+  events.forEach(function (ev) {
+    if (!ev.isAllDayEvent() || ev.getTag(TAG_KEY) !== TAG_VALUE) return; // not ours: never touch
+    var d = Utilities.formatDate(ev.getAllDayStartDate(), tz, "yyyy-MM-dd");
+    (byDay[d] = byDay[d] || []).push(ev);
+  });
+  var days = Object.keys(byDay);
+  Object.keys(want).forEach(function (d) { if (days.indexOf(d) < 0) days.push(d); });
+  days.forEach(function (d) {
+    var missing = (want[d] || []).slice(); // titles still to be created that day
+    (byDay[d] || []).forEach(function (ev) {
+      var k = missing.indexOf(ev.getTitle());
+      if (k >= 0) { missing.splice(k, 1); result.kept++; } // exactly the session we want: keep it
+      else { ev.deleteEvent(); result.deleted++; }         // outdated, changed or duplicate: remove
+    });
+    missing.forEach(function (t) {
+      var ev = cal.createAllDayEvent(t, parseDay_(d, tz));
+      ev.setTag(TAG_KEY, TAG_VALUE);
+      result.created++;
+    });
+  });
+}
+
 function getCalendar_() {
   if (!CALENDAR_NAME) return CalendarApp.getDefaultCalendar();
-  var found = CalendarApp.getCalendarsByName(CALENDAR_NAME);
+  var found = CalendarApp.getOwnedCalendarsByName(CALENDAR_NAME);
   return found.length ? found[0] : CalendarApp.createCalendar(CALENDAR_NAME);
 }
 
