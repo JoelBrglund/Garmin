@@ -10,7 +10,7 @@
 
 const CAL = {
   key: "garmin-calendar-sync-v1",
-  title: "Training",
+  fallbackTitle: "Training",
   debounceMs: 900,
   timeoutMs: 40000,
   retryMs: [5000, 15000, 45000, 120000, 300000], // then every 5 minutes
@@ -26,14 +26,19 @@ function calLoad() {
 }
 function calSave(o) { store.set(CAL.key, JSON.stringify(o)); }
 
-// The days that should have a "Training" event: a day with at least one session that is neither skipped nor optional.
-// A session that is already done still counts, so the event stays after you have trained.
+// One all-day event per training day, named like the Schedule page: "Lower lift 60 min + Swim 60 min".
+// A training day has at least one session that is neither skipped nor optional. Sessions already done still count
+// (with their planned length, so the title does not change after you have trained).
 function calendarWanted(st = schedState(), today = localToday()) {
   const plan = buildSchedule({ state: st, today });
-  const days = plan.days.filter((d) => d.items.some((it) => !it.skipped && !it.optional)).map((d) => d.date);
-  return { from: today, to: addDays(today, 6), days };
+  const events = [];
+  plan.days.forEach((d) => {
+    const items = d.items.filter((it) => !it.skipped && !it.optional);
+    if (items.length) events.push({ day: d.date, title: items.map((it) => `${sessionTitle(it)}${it.minutes ? ` ${it.minutes} min` : ""}`).join(" + ") || CAL.fallbackTitle });
+  });
+  return { from: today, to: addDays(today, 6), events, days: events.map((e) => e.day) };
 }
-const calSig = (w) => `${w.from}|${w.days.join(",")}`;
+const calSig = (w) => `${w.from}|${w.events.map((e) => `${e.day}=${e.title}`).join(",")}`;
 
 function calSetStatus(status, message = "") {
   calRun.status = status; calRun.message = message;
@@ -87,7 +92,7 @@ async function calendarSync(reason = "edit") {
   clearTimeout(calRun.retryTimer);
   calSetStatus("syncing");
   try {
-    const r = await calCall({ action: "sync", from: w.from, to: w.to, days: w.days, title: CAL.title });
+    const r = await calCall({ action: "sync", from: w.from, to: w.to, events: w.events });
     calSave({ ...calLoad(), sig, at: Date.now(), base: sig });
     calRun.retries = 0;
     calSetStatus("ok", `Synced just now · ${w.days.length} training day${w.days.length === 1 ? "" : "s"}${r.created || r.deleted || r.updated ? ` (${[r.created && `${r.created} added`, r.updated && `${r.updated} updated`, r.deleted && `${r.deleted} removed`].filter(Boolean).join(", ")})` : ""}`);
@@ -121,7 +126,7 @@ window.addEventListener("online", () => { if (calRun.status === "retry") { calRu
 function calendarCard(view) {
   const on = !!calConfig();
   const el = section(view, `<details id="cal-card"><summary>Google Calendar · <span id="cal-status" role="status">${esc(calStatusText())}</span></summary>
-    ${on ? `<p class="note">Your next 7 days of training are kept in Google Calendar as all-day “${esc(CAL.title)}” events. It updates by itself whenever the plan changes, and only ever touches events it created.</p>
+    ${on ? `<p class="note">Your next 7 days of training are kept in Google Calendar as all-day events named after your sessions, for example “Lower lift 60 min + Swim 60 min”. It updates by itself whenever the plan changes, and only ever touches events it created.</p>
       <p class="note"><button class="link-btn" id="cal-sync" data-cal="sync">Sync now</button> <button class="link-btn" id="cal-test" data-cal="test">Test connection</button></p>`
     : `<p class="note">Not connected. Follow calendar-bridge/SETUP.md in the project to turn this on (about 10 minutes, once).</p>`}</details>`);
   el.querySelectorAll("[data-cal]").forEach((b) => b.addEventListener("click", async () => {

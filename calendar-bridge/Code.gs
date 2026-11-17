@@ -46,14 +46,19 @@ function doPost(e) {
   }
 }
 
-/** Make the calendar's "Training" events match req.days inside the window [req.from, req.to]. */
+/** Make the calendar's events match req.events ([{day, title}]) inside the window [req.from, req.to].
+ *  (Older dashboards send req.days + req.title instead; that still works.) */
 function syncDays_(req) {
-  var from = req.from, to = req.to, days = req.days;
-  if (!isDay_(from) || !isDay_(to) || from > to || !Array.isArray(days) || !days.every(isDay_)) throw new Error("invalid window");
+  var from = req.from, to = req.to;
+  var events = req.events;
+  if (events === undefined && Array.isArray(req.days)) {
+    events = req.days.map(function (d) { return { day: d, title: req.title }; });
+  }
+  if (!isDay_(from) || !isDay_(to) || from > to || !Array.isArray(events) ||
+      !events.every(function (e) { return e && isDay_(e.day); })) throw new Error("invalid window");
   if (daysBetween_(from, to) >= MAX_WINDOW_DAYS) throw new Error("window too long");
-  var title = cleanTitle_(req.title);
   var want = {};
-  days.forEach(function (d) { if (d >= from && d <= to) want[d] = true; });
+  events.forEach(function (e) { if (e.day >= from && e.day <= to) want[e.day] = cleanTitle_(e.title); });
 
   var lock = LockService.getScriptLock();
   lock.waitLock(20000); // two requests at once would race, so they queue up
@@ -76,11 +81,11 @@ function syncDays_(req) {
         return;
       }
       for (var i = 1; i < list.length; i++) { list[i].deleteEvent(); result.deleted++; } // duplicates
-      if (list[0].getTitle() !== title) { list[0].setTitle(title); result.updated++; } else result.kept++;
+      if (list[0].getTitle() !== want[d]) { list[0].setTitle(want[d]); result.updated++; } else result.kept++;
     });
     Object.keys(want).forEach(function (d) {
       if (byDay[d]) return;
-      var ev = cal.createAllDayEvent(title, parseDay_(d, tz));
+      var ev = cal.createAllDayEvent(want[d], parseDay_(d, tz));
       ev.setTag(TAG_KEY, TAG_VALUE);
       result.created++;
     });
@@ -97,7 +102,7 @@ function getCalendar_() {
 }
 
 function cleanTitle_(t) {
-  t = typeof t === "string" ? t.replace(/[\r\n]+/g, " ").trim().slice(0, 60) : "";
+  t = typeof t === "string" ? t.replace(/[\r\n]+/g, " ").trim().slice(0, 120) : "";
   return t || "Training";
 }
 function isDay_(s) { return typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s); }

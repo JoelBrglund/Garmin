@@ -1444,8 +1444,11 @@ function schedAction(d) {
   render();
 }
 
+// The name a session goes by on the Schedule page (also used for the Google Calendar event).
+const sessionTitle = (it) => it.title || (it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : SCH.kinds[it.kind].label);
+
 function sessionHtml(it, date) {
-  const k = SCH.kinds[it.kind], title = it.title || (it.kind === "bike" && it.role === "tempo" ? "Tempo bike" : it.kind === "bike" && !it.base ? "Easy bike" : k.label);
+  const k = SCH.kinds[it.kind], title = sessionTitle(it);
   const chip = it.done ? `<span class="chip-status">✓ Done</span>` : it.skipped ? `<span class="chip-status">Skipped</span>` : it.optional ? `<span class="chip-status">Optional</span>` : "";
   const mins = (it.done && it.done.minutes) || it.minutes;
   const menu = [];

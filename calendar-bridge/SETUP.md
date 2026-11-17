@@ -1,6 +1,6 @@
 # Google Calendar sync: one-time setup (about 10 minutes)
 
-The dashboard keeps your next 7 days of training in Google Calendar as all-day events called **Training**.
+The dashboard keeps your next 7 days of training in Google Calendar as all-day events named after your sessions, e.g. **Lower lift 60 min + Swim 60 min**.
 It happens by itself whenever you change the plan. The only thing you do is this setup, once.
 
 Why this way: the dashboard is a static website, which cannot safely hold a long-lived Google login.
@@ -46,7 +46,8 @@ From then on it updates by itself.
 
 - **It only touches its own events.** Every event it makes carries a hidden mark. Your own events, even ones titled "Training", are never changed or deleted. If you delete one of its events by hand, the next sync puts it back.
 - **Rolling 7 days:** today plus the next six. Events for days that fall out of the plan are removed; past days are left alone.
-- **What counts as a training day:** a day with at least one session that is not skipped and not optional (a day you already trained still counts).
+- **What counts as a training day:** a day with at least one session that is not skipped and not optional (a day you already trained still counts). The event title lists those sessions with their planned minutes, as on the Schedule page, and updates when you change them.
+- **After updating the script code:** Deploy → Manage deployments → pencil → Version: New version → Deploy (the web address stays the same).
 - **The plan lives on each device.** If you use the dashboard on both phone and computer, the calendar follows whichever device changed the plan last. A device that has never synced does not start on its own, so opening the dashboard on a new device will not overwrite anything.
 - **Failed sync (no internet, Google busy):** it retries automatically (after 5 s, 15 s, 45 s, 2 min, then every 5 min) and straight away when you are back online. A wrong secret or a wrong deployment setting is shown on the card instead of retrying forever.
 - **Change the secret:** edit it in the script (new version) and in the GitHub secret, then re-run the workflow.
