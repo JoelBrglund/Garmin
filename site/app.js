@@ -507,7 +507,7 @@ function vo2Charts(grid, from, short) {
   if (rp.length) chartCard(grid, "Running VO2 max", {
     type: "line", labels: rp.map((p) => short(p.date)), xName: "Run", tipLabels: rp.map(tip),
     series: [{ name: "VO2 max", color: c[0], values: rp.map((p) => p.line) }],
-    yFmt: (v) => `${num(v, 1)} ml/kg/min`, axisFmt: (v) => num(v), dots: rp.length < 40,
+    yFmt: (v) => `${num(v, 1)} ml/kg/min`, axisFmt: (v) => num(v, Number.isInteger(v) ? 0 : 1), dots: rp.length < 40,
   }, "Worked out from your running pace and heart rate, the way Garmin does. Each point is the median of your last 3 runs. Going up = fitter.");
   const swim = vo2Summary("swim");
   const byPool = new Map();
@@ -521,7 +521,7 @@ function vo2Charts(grid, from, short) {
     chartCard(grid, "Swim VO2 max", {
       type: "line", labels: sp.map((p) => short(p.date)), xName: "Swim", tipLabels: sp.map(tip), connect: true,
       series: pools.map((pl, i) => ({ name: pl ? `${pl} m pool` : "Open water", color: c[i % 2], values: sp.map((p) => (p.pool === pl ? p.line : null)) })),
-      yFmt: (v) => `${num(v, 1)}`, axisFmt: (v) => num(v), dots: sp.length < 40,
+      yFmt: (v) => `${num(v, 1)}`, axisFmt: (v) => num(v, Number.isInteger(v) ? 0 : 1), dots: sp.length < 40,
     }, "Swim speed at a given effort, scaled to the running number. Each point is the median of your last 5 swims in that pool; drill and technique swims are left out. Read it as up, down or flat.");
   }
 }

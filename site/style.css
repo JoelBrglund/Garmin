@@ -192,7 +192,8 @@ svg { display: block; }
 }
 .tile { background: var(--surface); box-shadow: var(--shadow); border-radius: var(--r-tile); padding: 14px; min-width: 0; }
 .card .tile { background: var(--surface-2); box-shadow: none; }
-.card .tiles { grid-template-columns: repeat(auto-fit, minmax(min(100%, 190px), 1fr)); }
+.card .tiles { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+.card .tiles > .tile:has(.gauge) { grid-column: 1 / -1; }
 .tile .label { font-size: 0.8125rem; font-weight: 500; color: var(--muted); }
 .tile .value { font-size: 1.75rem; font-weight: 650; line-height: 1.12; margin-top: 4px; letter-spacing: -0.02em; overflow-wrap: anywhere; }
 .tile .value small { font-size: 0.875rem; font-weight: 500; color: var(--muted); letter-spacing: 0; }
