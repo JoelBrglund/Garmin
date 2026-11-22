@@ -1157,12 +1157,22 @@ function zoneText(n) { // heart-rate range of zone n (from your Garmin zones)
 
 // The weekly bike session. It stays a tempo session while the week's volume can still grow; once volume is maxed out
 // (45 min caps) it gets harder step by step instead, one step for every two hard bike sessions you complete.
+// A set is built to fit the session length exactly: warm-up + hard blocks + easy gaps + cool-down = the minutes shown.
+// Each step has a fixed number of blocks and gap length; the block length is whatever fits (whole minutes), and any
+// minutes left over go to a longer warm-up and cool-down.
 const TEMPO = [
-  { name: "Tempo bike", text: () => `6 min easy, 3 × 8 min comfortably hard (zone 3${zoneText(3)}), 3 min easy between, 5 min easy to finish.` },
-  { name: "Threshold bike", text: () => `6 min easy, 3 × 10 min hard but steady (zone 4${zoneText(4)}), 2 min easy between, 4 min easy to finish.` },
-  { name: "Bike intervals", text: () => `8 min easy, 5 × 4 min hard (zone 4–5${zoneText(4)}), 3 min easy between, 5 min easy to finish.` },
-  { name: "VO2 bike intervals", text: () => `8 min easy, 6 × 3 min very hard (zone 5${zoneText(5)}), 2–3 min easy between, 5 min easy to finish.` },
+  { name: "Tempo bike", reps: 3, gap: 3, warm: 6, cool: 4, hard: "comfortably hard", zone: 3 },
+  { name: "Threshold bike", reps: 3, gap: 2, warm: 6, cool: 4, hard: "hard but steady", zone: 4 },
+  { name: "Bike intervals", reps: 5, gap: 3, warm: 8, cool: 5, hard: "hard", zone: 4, zoneEnd: 5 },
+  { name: "VO2 bike intervals", reps: 6, gap: 2, warm: 8, cool: 5, hard: "very hard", zone: 5 },
 ];
+function tempoSet(step, minutes) {
+  const main = minutes - step.warm - step.cool, rep = Math.floor((main - (step.reps - 1) * step.gap) / step.reps);
+  if (rep < 2) return `Warm up easily, then ride hard but controlled for about ${Math.max(5, Math.round(minutes / 3))} min, then cool down. (${minutes} min in total.)`;
+  const left = main - step.reps * rep - (step.reps - 1) * step.gap, warm = step.warm + Math.ceil(left / 2), cool = step.cool + Math.floor(left / 2);
+  const bpm = zoneText(step.zone).replace(/^ \(|\)$/g, ""), zone = `zone ${step.zoneEnd ? `${step.zone}–${step.zoneEnd}` : step.zone}${bpm ? `, ${bpm}` : ""}`;
+  return `${warm} min easy, ${step.reps} × ${rep} min ${step.hard} (${zone}), ${step.gap} min easy between, ${cool} min easy to finish. (${warm + step.reps * rep + (step.reps - 1) * step.gap + cool} min in total.)`;
+}
 
 // Cardio load of the 4 weeks before today, newest week first.
 function cardioBlocks(today) {
@@ -1186,7 +1196,7 @@ const hardBikesSince = (since, today) => DATA.activities.filter((a) => SCH_MATCH
 
 function describe(it, G, weekNo) {
   if (it.kind === "swim") return ""; // team session: the coach sets it
-  if (it.kind === "bike") return it.role === "tempo" ? TEMPO[(it.level || 1) - 1].text() : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
+  if (it.kind === "bike") return it.role === "tempo" ? tempoSet(TEMPO[(it.level || 1) - 1], it.minutes) : `Easy bike in zone 2${zoneText(2)}. You should be able to hold a conversation.`;
   if (it.kind === "run") return `Easy run in zone 2${zoneText(2)}, conversational pace.${it.base ? "" : " Short and easy to keep treadmill mileage low."}`;
   if (it.kind === "climb") return "Rock climbing. Garmin doesn't record it, so tick it off yourself when it's done.";
   return G.lift || "";
@@ -1505,7 +1515,7 @@ function renderSchedule(view) {
     <p class="note"><b>Goals.</b> Improve: ${esc(SCH.text.improve)} Maintain: ${esc(SCH.text.maintain)} Recover: ${esc(SCH.text.recover)} The dot on a goal marks the one suggested right now: ${esc(sug.reason)}</p>
     <p class="note">${esc(plan.why)}</p>
     <p class="note"><b>Easier week.</b> In Improve, after three normal weeks in a row (counted from when you chose Improve) the next week is easier: about ${Math.round(SCH.deload.mult * 100)}% of the target, lighter lifts and short optional cardio. <b>Harder bike session.</b> Once weekly volume can't grow any more (extra sessions at their longest), the weekly bike session gets harder step by step: tempo, threshold, hard intervals, then VO2 intervals. It moves up one step for every ${SCH.hardBikeEvery} hard bike sessions you complete after that point. Tap ⋯ on a session to see its details.</p>
-    <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Easy bike or run: zone 2${zoneText(2)}, conversational. Tempo bike (one a week when improving): 10 min easy, 3 × 8 min in zone 3–4${zoneText(3)}, easy between and at the end. Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. Tap ⋯ on a session to move, remove or skip it, and use ＋ Add on a day to add any session.</p>
+    <p class="note">Your fixed week is kept: lifts take 1 hour, climbing 1 hour 45 and swims 1 hour (your team sets those). Extra 30–45 minute cardio (never longer than 45) is added after upper lifts and climbing, never after lower lifts. Easy bike or run: zone 2${zoneText(2)}, conversational. Tempo bike (one a week when improving): an easy warm-up, three hard blocks in zone 3${zoneText(3)} with easy gaps between, and an easy cool-down, sized so the whole set adds up to the session length (tap ⋯ on the session to see it). Running from November to April is on a treadmill, so it is limited to one short easy run about every ${SCH.runEveryDays} days. Tap ⋯ on a session to move, remove or skip it, and use ＋ Add on a day to add any session.</p>
     <p class="note">The week's cardio target comes from your 4-week average load: ${SCH.goals.improve.mult}× to improve, ${SCH.goals.maintain.mult}× to maintain, ${SCH.goals.recover.mult}× to recover, never more than ${Math.round((SCH.maxRamp - 1) * 100)}% above last week, and lower when readiness is low or recent load is high. For load, the swim where your legs are fresh (Thursday) counts as the harder one and Tuesday's as easier.</p>
     <p class="note">Garmin sessions are matched automatically. Climbing isn't on Garmin, so tick it yourself. Garmin can't tell upper from lower lifts, so a lift counts as done when any strength session is recorded that day.</p>
     <p class="note"><button class="link-btn" data-sch="reset">Reset to the standard week</button></p></details>`);
