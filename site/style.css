@@ -387,3 +387,10 @@ th { color: var(--muted); font-weight: 500; border-top: 0; }
 .gauge-range { position: absolute; top: 0; bottom: 0; border-radius: 5px; background: color-mix(in srgb, var(--good) 34%, transparent); }
 .gauge-dot { position: absolute; top: 50%; width: 18px; height: 18px; margin: -9px 0 0 -9px; border-radius: 50%; background: var(--text); border: 3px solid var(--surface-2); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3); }
 .gauge-scale { display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--muted); margin-top: 6px; }
+
+/* Narrow phones: "Mark done" becomes a check mark so the row (name, length, tick, menu) stays on one line */
+@media (max-width: 480px) {
+  .sess.compact .link-btn.quick { min-width: 44px; padding: 0; }
+  .sess.compact .link-btn.quick .q-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .sess.compact .link-btn.quick::before { content: "✓"; font-size: 1.125rem; font-weight: 700; }
+}

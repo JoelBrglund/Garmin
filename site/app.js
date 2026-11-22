@@ -1259,7 +1259,8 @@ function buildSchedule(opts = {}) {
   const total = () => doneToday + days.reduce((s, d) => s + d.items.filter(counts).reduce((x, it) => x + it.load, 0), 0);
 
   // Extra cardio after upper lifts and climbing (30-45 min, never after lower lifts or on swim days).
-  const slots = days.filter((d) => (has(d, "lift-upper") || has(d, "climb")) && !has(d, "lift-lower") && !has(d, "swim") && !has(d, "bike") && !has(d, "run"));
+  const active = (d, k) => d.items.some((x) => x.kind === k && !x.skipped); // a skipped lift or climb gets no "after" cardio
+  const slots = days.filter((d) => (active(d, "lift-upper") || active(d, "climb")) && !has(d, "lift-lower") && !has(d, "swim") && !has(d, "bike") && !has(d, "run"));
   const qIdx = qDate ? days.find((d) => d.date === qDate).i : null;
   let tempoDate = null;
   if (G.tempo && !readyLow) {
@@ -1349,6 +1350,7 @@ function buildSchedule(opts = {}) {
   const planned = Math.round(total());
   const minutes = days.reduce((s, d) => s + d.items.filter((it) => !it.skipped && it.minutes).reduce((x, it) => x + it.minutes, 0), 0);
   const why = [`${G.label}: about ${planned} cardio load planned against a target of ${Math.round(target)} (your 4-week average is ${Math.round(ts.chronic)}).`];
+  if (planned > target * 1.03) why.push(`Each extra session starts at its shortest length, so the week lands a little above the target but under the safe limit of ${Math.round(ceiling)}.`);
   if (readyLow) why.push("Readiness is low, so the next two days stay easy.");
   if (ts.ratio > 1.5) why.push("Recent load is high, so the plan eases off.");
   if (ts.ratio !== null && ts.ratio < 0.8) why.push("Recent load is low, so the plan builds back gradually.");
@@ -1475,7 +1477,7 @@ function sessionHtml(it, date) {
     menu.push(`<button class="link-btn" data-sch="remove" data-date="${date}" data-kind="${it.kind}">Remove</button>`);
   } else menu.push(`<button class="link-btn" data-sch="skip" data-id="${esc(it.id)}">${it.skipped ? "Undo skip" : "Skip"}</button>`);
   if (it.kind === "climb" && it.done) menu.unshift(`<button class="link-btn" data-sch="done" data-id="${esc(it.id)}">Undo done</button>`);
-  const quick = it.kind === "climb" && !it.done ? `<button class="link-btn quick" data-sch="done" data-id="${esc(it.id)}">Mark done</button>` : "";
+  const quick = it.kind === "climb" && !it.done ? `<button class="link-btn quick" data-sch="done" data-id="${esc(it.id)}"><span class="q-text">Mark done</span></button>` : "";
   return `<div class="sess compact ${it.skipped ? "skipped" : ""} ${it.done ? "done" : ""}" style="--c: var(${k.color})">
     <div class="sess-top"><span aria-hidden="true">${k.icon}</span><b>${esc(title)}</b>${chip}<span class="sess-dur">${mins ? mins + " min" : ""}</span>${quick}
       <button class="more-btn" data-sch="more" aria-label="More options for ${esc(title)}">⋯</button></div>
