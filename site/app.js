@@ -1364,6 +1364,14 @@ function scheduleAdherence(st, today) {
       const id = `${date}:${kind}`, done = doneFor(date, kind, st);
       out.push({ id, date, kind, done, status: done ? "done" : st.skip[id] ? "skipped" : "missed" });
     });
+    // Cardio you did that wasn't a standard session (e.g. the extra bike after a lift) still belongs in the list.
+    const planned = baseKinds(date, st);
+    ["swim", "bike", "run"].filter((kind) => !planned.includes(kind)).forEach((kind) => {
+      DATA.activities.filter((x) => actDate(x) === date && SCH_MATCH[kind](x)).forEach((x, n) => {
+        out.push({ id: `${date}:${kind}:extra${n}`, date, kind, extra: true, status: "done",
+          done: { minutes: Math.round(actTime(x) / 60), load: x.activityTrainingLoad || 0, name: x.activityName || humanize(x.type) } });
+      });
+    });
   }
   return out;
 }
