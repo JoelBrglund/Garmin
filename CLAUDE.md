@@ -32,6 +32,7 @@ Researched against Apple's Human Interface Guidelines (layout, typography, color
 - **Touch + keyboard:** every control is >= 44 x 44 px, `:focus-visible` shows a 3 px ring, controls use `touch-action: manipulation` and `user-select: none`.
 - **Motion** is small and always disabled by `prefers-reduced-motion`. Also handled: `prefers-contrast: more`, `forced-colors`, safe-area insets, light/dark theme-color metas.
 - **Phone audit (Nov 2026):** chart axes must not repeat labels (VO2 charts show .5 steps when the range is small, whole numbers otherwise); tiles inside cards are two across on a phone (`minmax(150px)`) and a tile holding a range gauge spans the full width; the climbing "Mark done" is a check mark on narrow screens.
+- The day picker shows a second date line only when its main label has no date in it ("Today", "Yesterday"); `#view` carries `data-tab`, and the Schedule is capped at 760 px wide on desktop.
 - **Charts:** one soft area fill under single lines, light grid, end-point label, `aria-label` with latest value and range, and a "Show numbers" table (named per chart, keyboard-focusable).
 - **Checking changes:** the browser audit used axe-core (WCAG 2.2 AA + best practice) on every tab in light and dark, 44 px targets, no sideways scrolling from 320 px to 1280 px and at 150% / 200% text, keyboard focus and reduced motion. Zero violations at the time of the redesign; re-run something equivalent after bigger UI changes.
 

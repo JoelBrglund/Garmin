@@ -1916,6 +1916,7 @@ function render() {
     + (DATA.demo ? `<div class="banner">Preview: the lifting data is made up to show how Hevy would look. Your Garmin data is real and unchanged.</div>` : "");
   const view = $("#view");
   view.innerHTML = "";
+  view.dataset.tab = state.tab;
   ({ today: renderToday, sleep: renderSleep, activities: renderActivities, schedule: renderSchedule, trends: renderTrends, strength: renderStrength })[state.tab](view);
   window.scrollTo(0, 0);
 }
@@ -1927,7 +1928,7 @@ function dayPicker(view, dates, current, onChange, labelFn = relDay) {
   const el = document.createElement("div");
   el.className = "daypicker";
   el.innerHTML = `<button aria-label="Previous day" ${i <= 0 ? "disabled" : ""}>‹</button>
-    <div class="day">${esc(labelFn(current))}<div class="muted small">${esc(fmtDay(current, { day: "numeric", month: "short", year: "numeric" }))}</div></div>
+    <div class="day">${esc(labelFn(current))}${/\d/.test(labelFn(current)) ? "" : `<div class="muted small">${esc(fmtDay(current, { day: "numeric", month: "short", year: "numeric" }))}</div>`}</div>
     <button aria-label="Next day" ${i >= dates.length - 1 ? "disabled" : ""}>›</button>`;
   const [prev, next] = el.querySelectorAll("button");
   prev.onclick = () => onChange(dates[i - 1]);

@@ -395,3 +395,8 @@ th { color: var(--muted); font-weight: 500; border-top: 0; }
   .sess.compact .link-btn.quick .q-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .sess.compact .link-btn.quick::before { content: "✓"; font-size: 1.125rem; font-weight: 700; }
 }
+
+/* Wide screens: the schedule is a list of short rows, so keep it to a readable width */
+@media (min-width: 900px) {
+  .view[data-tab="schedule"] { max-width: 760px; margin-inline: 0; }
+}
