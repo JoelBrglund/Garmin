@@ -1113,7 +1113,7 @@ const SCH = {
 // Which Garmin activities count as each planned session (climbing isn't on Garmin: you tick it).
 const SCH_MATCH = {
   "lift-upper": (a) => isStrength(a), "lift-lower": (a) => isStrength(a),
-  swim: (a) => isSwim(a), bike: (a) => /cycl|bik/.test(a.type), run: (a) => isRealRun(a), climb: () => false,
+  swim: (a) => isSwim(a), bike: (a) => /cycl|bik/.test(a.type), run: (a) => /run|treadmill|jog/.test(a.type), climb: () => false,
 };
 const actColorVar = (type) => /swim/.test(type) ? "--act-swim" : /run/.test(type) ? "--act-run" : /cycl|bik|ride/.test(type) ? "--act-bike"
   : type === "strength_training" ? "--act-strength" : /walk|hik/.test(type) ? "--act-walk" : /climb/.test(type) ? "--act-climb" : null;
